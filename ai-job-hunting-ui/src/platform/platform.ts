@@ -6,7 +6,7 @@ import {
     PublishStopExp,
     PushReqException
 } from "../exp";
-import {scrollElementToBottom, simulateScrollToEnd, TampermonkeyApi, Tools} from "./utils";
+import {simulateScrollToEnd, TampermonkeyApi, Tools} from "./utils";
 import logger, {LogLevel} from '../logging'
 import axiosOriginal from "axios";
 import {PushResultStatus, PushStatus} from "../enums";
@@ -18,6 +18,8 @@ import {AiPower} from "./aiPower";
 
 let pushResultCounter: any;
 let userStore: any;
+
+const MAX_CONSECUTIVE_NOT_MATCH_COUNT = 30;
 
 
 export enum PlatformTypeEnum {
@@ -46,6 +48,8 @@ export interface Platform {
     startPush(): Promise<void>;
 
     pausePush(): void;
+
+    scrollToBottomThenTop(): Promise<void>;
 
     getPlatformType(): PlatformTypeEnum;
 }
@@ -86,47 +90,73 @@ export abstract class AbsPlatform implements Platform {
         pushResultCounter.clearOnceSuccessCount()
         this.pushStatus = PushStatus.PUSHING;
         this.startPreHandler()
+        this.scrollDownOnStart()
+        let consecutiveNotMatchCount = 0;
         do {
             // 获取jobDetail集合并过滤
             let jobList = this.getJobList();
+            if (jobList.length === 0) {
+                if (!(await this.next())) {
+                    break;
+                }
+                continue;
+            }
             for (const jobDetail of jobList) {
+                let shouldScrollAfterJob = true;
                 try {
                     this.preMatchJob();
                     await this.matchJob(jobDetail);
+                    consecutiveNotMatchCount = 0;
                     this.pushPreHandler(jobDetail);
                     const pushResult = await this.push(jobDetail);
                     await this.pushAfterHandler(pushResult, jobDetail);
                 } catch (error) {
                     switch (true) {
                         case error instanceof NotMatchException:
+                            consecutiveNotMatchCount++;
                             if (this.logRecorder.getLogLevel() === LogLevel.Debug) {
                                 this.logRecorder.info(`工作【${error.jobTitle}】被过滤 原因：${error.message} 当前值:${error.data}`)
                             } else {
                                 this.logRecorder.info(`工作【${error.jobTitle}】被过滤 原因：${error.message}`)
                             }
                             pushResultCounter.notMatchIncr()
+                            if (consecutiveNotMatchCount >= MAX_CONSECUTIVE_NOT_MATCH_COUNT) {
+                                shouldScrollAfterJob = false;
+                                this.logRecorder.info(`连续过滤${MAX_CONSECUTIVE_NOT_MATCH_COUNT}个岗位，自动停止投递`)
+                                return;
+                            }
                             break;
 
                         case error instanceof PushReqException:
+                            consecutiveNotMatchCount = 0;
                             this.logRecorder.warn(`工作【${error.jobTitle}】投递失败 原因：${error.message}`)
                             pushResultCounter.failIncr()
                             break
 
                         case error instanceof FetchJobBossFailExp:
+                            consecutiveNotMatchCount = 0;
                             this.logRecorder.warn(`工作【${error.jobTitle}】发送自定义招呼语失败 原因：${error.message}`)
                             break
 
                         // 投递停止；手动停止.结束链路
                         case error instanceof PublishStopExp:
+                            shouldScrollAfterJob = false;
                             this.logRecorder.info("手动暂停投递 " + error.message)
                             return;
                         // 投递限制；平台限制.结束链路
                         case error instanceof PublishLimitExp:
+                            shouldScrollAfterJob = false;
                             this.logRecorder.info("停止投递 " + error.message)
                             return;
 
                         default:
                             logger.error("未捕获异常--->", error)
+                    }
+                } finally {
+                    if (shouldScrollAfterJob && this.pushStatus === PushStatus.PUSHING) {
+                        await this.afterJobHandled(jobDetail).catch(e => {
+                            this.logRecorder.warn("自动向下滑动失败", e)
+                        })
                     }
                 }
             }
@@ -135,13 +165,23 @@ export abstract class AbsPlatform implements Platform {
     }
 
     next = async () => {
+        if (this.pushStatus == PushStatus.PAUSE) {
+            return false;
+        }
+        if (this.hasPendingLoadedJob()) {
+            return true;
+        }
         let next = this.hasNext();
         if (!next) {
             this.logRecorder.info("无下一页数据")
             return false;
         }
         await Tools.sleep(userStore.user.preference.npi * 1000)
-        this.acquireDataPre();
+        const acquired = await this.acquireDataPre();
+        if (!acquired) {
+            this.logRecorder.info("无法继续下滑获取新岗位，自动停止投递")
+            return false;
+        }
         await Tools.sleep(3000)
         return next
     };
@@ -149,11 +189,92 @@ export abstract class AbsPlatform implements Platform {
     pausePush(): void {
     }
 
+    async scrollToBottomThenTop(): Promise<void> {
+        await this.scrollWindowToBottomUntilStable();
+        this.scrollWindowToTop();
+    }
+
+    protected async scrollWindowToBottomUntilStable(maxAttempts = 60, stableThreshold = 2, waitMs = 1200): Promise<void> {
+        let stableCount = 0;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const moved = await this.humanScrollWindowDownOnce(waitMs);
+            if (!moved) {
+                stableCount++;
+                if (stableCount >= stableThreshold) {
+                    return;
+                }
+            } else {
+                stableCount = 0;
+            }
+        }
+    }
+
+    protected async humanScrollWindowDownOnce(waitMs = 1200): Promise<boolean> {
+        const oldHeight = this.getWholePageScrollHeight();
+        const oldTop = window.scrollY;
+        const maxTop = Math.max(0, oldHeight - window.innerHeight);
+        const distance = Math.max(260, Math.floor(window.innerHeight * 0.8));
+        const targetTop = Math.min(maxTop, oldTop + distance);
+        const steps = Math.max(6, Math.ceil(Math.max(1, targetTop - oldTop) / 120));
+
+        for (let step = 1; step <= steps; step++) {
+            const nextTop = oldTop + ((targetTop - oldTop) * step / steps);
+            const deltaY = nextTop - window.scrollY || distance / steps;
+            window.dispatchEvent(new WheelEvent('wheel', {
+                deltaY,
+                bubbles: true,
+                cancelable: true,
+                view: window
+            }));
+            window.scrollTo({
+                top: nextTop,
+                behavior: 'auto'
+            });
+            window.dispatchEvent(new Event('scroll'));
+            await Tools.sleep(Tools.getRandomNumber(35, 80));
+        }
+
+        await Tools.sleep(waitMs);
+        const newHeight = this.getWholePageScrollHeight();
+        const newTop = window.scrollY;
+        return newHeight > oldHeight || newTop > oldTop;
+    }
+
+    protected scrollWindowToTop(): void {
+        window.scrollTo({
+            top: 0,
+            behavior: document.hidden ? 'auto' : 'smooth'
+        });
+    }
+
+    private getWholePageScrollHeight(): number {
+        const documentElement = document.documentElement;
+        return Math.max(
+            document.body.scrollHeight,
+            documentElement.scrollHeight,
+            document.body.offsetHeight,
+            documentElement.offsetHeight,
+            document.body.clientHeight,
+            documentElement.clientHeight
+        );
+    }
+
     abstract hasNext(): boolean;
 
-    abstract acquireDataPre(): void;
+    abstract acquireDataPre(): Promise<boolean>;
 
     abstract startPreHandler(): void;
+
+    protected scrollDownOnStart(): void {
+    }
+
+    protected hasPendingLoadedJob(): boolean {
+        return false;
+    }
+
+    protected async afterJobHandled(_jobDetail: JobDetail): Promise<void> {
+    }
+
     abstract getJobList(): JobDetail[];
 
     abstract matchJob(jobDetail: JobDetail): Promise<boolean>;
@@ -220,6 +341,8 @@ class BossPlatform extends AbsPlatform {
     name = "Boss";
     urlList = ["/web/geek", "overseas"];
     lastHeight = 0;
+    private lastJobHandledScrollTime = 0;
+    private readonly jobHandledScrollInterval = 800;
 
 
     constructor(curUrl: string) {
@@ -232,42 +355,55 @@ class BossPlatform extends AbsPlatform {
     }
 
 
+    private findMountEle(): ElementP | null {
+        let element: Element | null = null;
+        let p = "";
+        if (this.curUrl.includes("www.zhipin.com/web/geek/chat")) {
+            element = document.querySelector(".chat-conversation");
+        }
+        if (this.curUrl.includes("www.zhipin.com/web/geek/job-recommend")) {
+            element = document.querySelector(".recommend-search-inner");
+            // element = document.querySelector(".recommend-result-inner");
+            p = "end";
+        }
+        if (this.curUrl.includes("www.zhipin.com/web/geek/jobs")) {
+            element = document.querySelector(".job-recommend-result");
+            // p = "end";
+        } else if (this.curUrl.includes("www.zhipin.com/web/geek/job")) {
+            element = document.querySelector(".page-job-inner");
+        }
+
+        if (this.curUrl.includes("overseas")) {
+            element = document.querySelector(".mod-header");
+        }
+
+        if (!element) {
+            return null;
+        }
+        return {
+            el: element,
+            p: p
+        }
+    }
+
+
     getMountEle(): Promise<ElementP> {
         return new Promise<ElementP>((resolve) => {
+            const maxCount = 100;
             let count: number = 0;
             let interval = setInterval(() => {
-                let element: Element | null = null;
-                let p = "";
-                if (this.curUrl.includes("www.zhipin.com/web/geek/chat")) {
-                    element = document.querySelector(".chat-conversation");
-                }
-                if (this.curUrl.includes("www.zhipin.com/web/geek/job-recommend")) {
-                    element = document.querySelector(".recommend-search-inner");
-                    // element = document.querySelector(".recommend-result-inner");
-                    p = "end";
-                }
-                if (this.curUrl.includes("www.zhipin.com/web/geek/jobs")) {
-                    element = document.querySelector(".job-recommend-result");
-                    // p = "end";
-                } else if (this.curUrl.includes("www.zhipin.com/web/geek/job")) {
-                    element = document.querySelector(".page-job-inner");
-                }
-
-                if (this.curUrl.includes("overseas")) {
-                    element = document.querySelector(".mod-header");
-                }
-
-                if (element !== null) {
+                const mountEle = this.findMountEle();
+                if (mountEle !== null) {
                     clearInterval(interval);
-                    return resolve({
-                        el: element as Element,
-                        p: p
-                    })
+                    return resolve(mountEle)
                 }
-                if (count >= 3) {
+                if (count >= maxCount) {
                     clearInterval(interval);
                     logger.error(PlatformTypeEnum.Boss, "获取平台挂载元素失败")
-                    return document.createElement("div")
+                    return resolve({
+                        el: document.body || document.documentElement,
+                        p: "end"
+                    })
                 }
                 count++;
             }, 300);
@@ -289,6 +425,210 @@ class BossPlatform extends AbsPlatform {
 
     startPreHandler(): void {
         this.lastHeight = 0;
+        this.lastJobHandledScrollTime = 0;
+    }
+
+    protected scrollDownOnStart(): void {
+        window.setTimeout(() => {
+            this.scrollDownForMoreJobs().catch(e => {
+                this.logRecorder.warn("自动向下滑动失败", e)
+            });
+        }, 0)
+    }
+
+    protected hasPendingLoadedJob(): boolean {
+        return this.getJobList().length > 0;
+    }
+
+    protected async afterJobHandled(_jobDetail: JobDetail): Promise<void> {
+        const now = Date.now();
+        if (now - this.lastJobHandledScrollTime < this.jobHandledScrollInterval) {
+            return;
+        }
+        this.lastJobHandledScrollTime = now;
+        await this.scrollDownForMoreJobs();
+    }
+
+    async scrollToBottomThenTop(): Promise<void> {
+        const scrollElement = this.getInfiniteScrollElement();
+        if (!scrollElement) {
+            await super.scrollToBottomThenTop();
+            return;
+        }
+
+        const moved = await this.scrollElementToBottomUntilStable(scrollElement);
+        if (!moved) {
+            await super.scrollToBottomThenTop();
+            return;
+        }
+        this.scrollElementToTop(scrollElement);
+    }
+
+    private async scrollDownForMoreJobs(): Promise<void> {
+        const scrollElement = this.getInfiniteScrollElement();
+        if (scrollElement) {
+            await this.humanDragScrollElementDownOnce(scrollElement, 1000);
+            return;
+        }
+        await this.humanScrollWindowDownOnce(1000);
+    }
+
+    private async scrollElementToBottomUntilStable(element: HTMLElement, maxAttempts = 80, stableThreshold = 2): Promise<boolean> {
+        let stableCount = 0;
+        let movedAny = false;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const moved = await this.humanDragScrollElementDownOnce(element, 2500);
+            if (!moved) {
+                stableCount++;
+                if (stableCount >= stableThreshold) {
+                    return movedAny;
+                }
+            } else {
+                movedAny = true;
+                stableCount = 0;
+            }
+            await Tools.sleep(300);
+        }
+        return movedAny;
+    }
+
+    private async humanDragScrollElementDownOnce(element: HTMLElement | null, waitTimeout = 2500): Promise<boolean> {
+        if (!element) {
+            return false;
+        }
+
+        const oldHeight = element.scrollHeight;
+        const oldTop = element.scrollTop;
+        const maxTop = Math.max(0, element.scrollHeight - element.clientHeight);
+        const distance = Math.max(260, Math.floor(element.clientHeight * 0.8));
+        const targetTop = Math.min(maxTop, oldTop + distance);
+        const scrollDistance = Math.max(1, targetTop - oldTop);
+        const steps = Math.max(8, Math.ceil(scrollDistance / 110));
+
+        for (let step = 1; step <= steps; step++) {
+            const nextTop = oldTop + ((targetTop - oldTop) * step / steps);
+            const deltaY = nextTop - element.scrollTop || distance / steps;
+            this.dispatchHumanWheel(element, deltaY);
+            element.scrollTop = nextTop;
+            element.dispatchEvent(new Event('scroll', {bubbles: true}));
+            await Tools.sleep(Tools.getRandomNumber(35, 85));
+        }
+
+        if (targetTop <= oldTop) {
+            this.dispatchHumanWheel(element, distance);
+            element.dispatchEvent(new Event('scroll', {bubbles: true}));
+        }
+
+        await this.waitForElementScrollHeightChange(element, oldHeight, waitTimeout);
+        const newHeight = element.scrollHeight;
+        const newTop = element.scrollTop;
+        return newHeight > oldHeight || newTop > oldTop;
+    }
+
+    private dispatchHumanWheel(element: HTMLElement, deltaY: number): void {
+        element.dispatchEvent(new WheelEvent('wheel', {
+            deltaY,
+            bubbles: true,
+            cancelable: true,
+            view: window
+        }));
+    }
+
+    private scrollElementToTop(element: HTMLElement): void {
+        if (element) {
+            element.scrollTo({
+                top: 0,
+                behavior: document.hidden ? 'auto' : 'smooth'
+            });
+        }
+        this.scrollWindowToTop();
+    }
+
+    private getInfiniteScrollElement(): HTMLElement | null {
+        const jobListElement = this.findScrollableJobCardParent();
+        if (jobListElement) {
+            return jobListElement;
+        }
+
+        const selectors = this.getInfiniteScrollCandidateSelectors();
+        for (const selector of selectors) {
+            const element = document.querySelector(selector) as HTMLElement | null;
+            const scrollElement = this.findScrollableElement(element);
+            if (scrollElement) {
+                return scrollElement;
+            }
+        }
+        return this.findScrollableJobCardParent();
+    }
+
+    private getInfiniteScrollCandidateSelectors(): string[] {
+        if (this.curUrl.includes("jobs")) {
+            return [
+                ".job-list-container",
+                ".job-list-wrapper",
+                ".job-list-box"
+            ];
+        }
+        if (this.curUrl.includes("overseas")) {
+            return [
+                ".job-list",
+                ".job-list-container",
+                ".job-list-wrapper",
+                ".job-list-box"
+            ];
+        }
+        return [];
+    }
+
+    private findScrollableElement(element: HTMLElement | null): HTMLElement | null {
+        if (!element) {
+            return null;
+        }
+        if (this.isScrollableElement(element)) {
+            return element;
+        }
+        return Array.from(element.querySelectorAll<HTMLElement>('*')).find(item => this.isScrollableElement(item)) || null;
+    }
+
+    private findScrollableJobCardParent(): HTMLElement | null {
+        const jobCard = document.querySelector<HTMLElement>(".job-card-wrap,.job-card-box,.job-card-wrapper");
+        let element = jobCard?.parentElement || null;
+        while (element && element !== document.body && element !== document.documentElement) {
+            if (this.isScrollableElement(element) && !this.containsJobDetailPane(element)) {
+                return element;
+            }
+            element = element.parentElement;
+        }
+        return null;
+    }
+
+    private isScrollableElement(element: HTMLElement): boolean {
+        if (this.isJobDetailElement(element)) {
+            return false;
+        }
+        const style = window.getComputedStyle(element);
+        const overflowY = style.overflowY;
+        const canScrollByStyle = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay';
+        if (element.scrollHeight <= element.clientHeight + 8) {
+            return false;
+        }
+        if (canScrollByStyle) {
+            return true;
+        }
+        const oldTop = element.scrollTop;
+        const targetTop = oldTop < element.scrollHeight - element.clientHeight ? oldTop + 1 : oldTop - 1;
+        element.scrollTop = targetTop;
+        const canMove = element.scrollTop !== oldTop;
+        element.scrollTop = oldTop;
+        return canMove;
+    }
+
+    private isJobDetailElement(element: HTMLElement): boolean {
+        return !!element.closest(".job-detail-container,.job-detail,.job-sec,.detail-content,.job-detail-box");
+    }
+
+    private containsJobDetailPane(element: HTMLElement): boolean {
+        return !!element.querySelector(".job-detail-container,.job-detail,.job-sec,.detail-content,.job-detail-box");
     }
 
     getJobList(): BossJobDetail[] {
@@ -303,26 +643,23 @@ class BossPlatform extends AbsPlatform {
         }
         if (this.curUrl.includes("job-recommend")) {
             let elementNodeList = document.querySelectorAll<any>(".job-card-wrap");
-            return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.contact) as BossJobDetail[];
+            return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.processed && !job.contact) as BossJobDetail[];
         }
         if (this.curUrl.includes("overseas")) {
             let elementNodeList = document.querySelectorAll<any>(".job-card-box");
-            return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.contact) as BossJobDetail[];
+            return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.processed && !job.contact) as BossJobDetail[];
         }
         let elementNodeList = document.querySelectorAll<any>(".job-card-wrapper");
-        return Array.from(elementNodeList).map(item => item.__vue__.data) as BossJobDetail[];
+        return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.processed) as BossJobDetail[];
     }
 
     hasNext(): boolean {
         logger.debug("hasNext")
-        if (this.curUrl.includes("jobs")) {
-            return this.lastHeight != document.querySelector(".job-list-container")?.scrollHeight
-        }
-        if (this.curUrl.includes("overseas")) {
-            return this.lastHeight != document.querySelector(".job-list")?.scrollHeight
+        if (this.isInfiniteScrollPage()) {
+            return !!this.getInfiniteScrollElement() || this.canScrollWindow()
         }
         if (this.curUrl.includes("job-recommend")) {
-            return !!document.querySelector("#footer");
+            return this.canScrollWindow() || !!document.querySelector("#footer");
         }
         let nextPageBtn = document.querySelector(".ui-icon-arrow-right") as any;
         if (nextPageBtn === null) {
@@ -331,37 +668,155 @@ class BossPlatform extends AbsPlatform {
         return nextPageBtn.parentElement.className !== "disabled";
     }
 
-    acquireDataPre(): void {
+    private isInfiniteScrollPage(): boolean {
+        return this.curUrl.includes("jobs") || this.curUrl.includes("overseas");
+    }
+
+    private getDocumentScrollHeight(): number {
+        const documentElement = document.documentElement;
+        return Math.max(
+            document.body.scrollHeight,
+            documentElement.scrollHeight,
+            document.body.offsetHeight,
+            documentElement.offsetHeight,
+            document.body.clientHeight,
+            documentElement.clientHeight
+        );
+    }
+
+    private canScrollWindow(): boolean {
+        return window.scrollY < this.getDocumentScrollHeight() - window.innerHeight - 2;
+    }
+
+    private async waitForElementScrollHeightChange(element: HTMLElement, oldHeight: number, timeout = 8000): Promise<void> {
+        if (!element || oldHeight <= 0 || element.scrollHeight !== oldHeight) {
+            return;
+        }
+
+        await new Promise<void>(resolve => {
+            let done = false;
+            let timer: number | undefined;
+            const observer = new MutationObserver(() => {
+                if (element.scrollHeight !== oldHeight) {
+                    cleanup();
+                }
+            });
+            const cleanup = () => {
+                if (done) {
+                    return;
+                }
+                done = true;
+                observer.disconnect();
+                if (timer) {
+                    clearTimeout(timer);
+                }
+                resolve();
+            };
+            observer.observe(element, {childList: true, subtree: true});
+            timer = window.setTimeout(cleanup, timeout);
+        });
+    }
+
+    private async waitForDocumentScrollHeightChange(oldHeight: number, timeout = 8000): Promise<void> {
+        const element = document.body || document.documentElement;
+        if (!element || oldHeight <= 0 || this.getDocumentScrollHeight() !== oldHeight) {
+            return;
+        }
+
+        await new Promise<void>(resolve => {
+            let done = false;
+            let timer: number | undefined;
+            const observer = new MutationObserver(() => {
+                if (this.getDocumentScrollHeight() !== oldHeight) {
+                    cleanup();
+                }
+            });
+            const cleanup = () => {
+                if (done) {
+                    return;
+                }
+                done = true;
+                observer.disconnect();
+                if (timer) {
+                    clearTimeout(timer);
+                }
+                resolve();
+            };
+            observer.observe(element, {childList: true, subtree: true});
+            timer = window.setTimeout(cleanup, timeout);
+        });
+    }
+
+    private async loadMoreByElementScroll(element: HTMLElement | null, waitTimeout = 8000): Promise<boolean> {
+        if (!element) {
+            return false;
+        }
+        const oldHeight = element.scrollHeight;
+        const oldTop = element.scrollTop;
+        this.lastHeight = oldHeight;
+        await this.humanDragScrollElementDownOnce(element, waitTimeout);
+        const newHeight = element.scrollHeight;
+        const newTop = element.scrollTop;
+        return newHeight > oldHeight || newTop > oldTop;
+    }
+
+    private async loadMoreByWindowScroll(): Promise<boolean> {
+        const oldHeight = this.getDocumentScrollHeight();
+        const oldTop = window.scrollY;
+        await simulateScrollToEnd();
+        await Tools.sleep(500);
+        await this.waitForDocumentScrollHeightChange(oldHeight);
+        const newHeight = this.getDocumentScrollHeight();
+        const newTop = window.scrollY;
+        return newHeight > oldHeight || newTop > oldTop;
+    }
+
+    async acquireDataPre(): Promise<boolean> {
         // 在等待下一页时点击了停止，不继续获取下一页数据
         if (this.pushStatus == PushStatus.PAUSE) {
-            return;
+            return false;
         }
-        if (this.curUrl.includes("jobs")) {
-            this.lastHeight = document.querySelector(".job-list-container")?.scrollHeight as number
-            simulateScrollToEnd().then(() => {
-                logger.info("获取下一页成功")
+        const scrollElement = this.getInfiniteScrollElement();
+        if (scrollElement) {
+            return await this.loadMoreByElementScroll(scrollElement).then(loaded => {
+                if (loaded) {
+                    logger.info("获取下一页成功")
+                }
+                return loaded;
             }).catch(e => {
                 this.logRecorder.warn("获取下一页失败", e)
+                return false;
             })
-            return;
-        } else if (this.curUrl.includes("job-recommend")) {
-            simulateScrollToEnd().then(() => {
-                logger.info("获取下一页成功")
+        }
+        if (this.isInfiniteScrollPage()) {
+            return await this.loadMoreByWindowScroll().then(loaded => {
+                if (loaded) {
+                    logger.info("获取下一页成功")
+                }
+                return loaded;
             }).catch(e => {
                 this.logRecorder.warn("获取下一页失败", e)
+                return false;
             })
-            return;
-        }else if (this.curUrl.includes("overseas")) {
-            this.lastHeight = document.querySelector(".job-list")?.scrollHeight as number
-            simulateScrollToEnd().then(() => {
-                logger.info("获取下一页成功")
+        }
+        if (this.curUrl.includes("job-recommend")) {
+            return await this.loadMoreByWindowScroll().then(loaded => {
+                if (loaded) {
+                    logger.info("获取下一页成功")
+                }
+                return loaded;
             }).catch(e => {
                 this.logRecorder.warn("获取下一页失败", e)
+                return false;
             })
-            return;
         }
         // 点击下一页
-        document.querySelector<any>(".ui-icon-arrow-right").click();
+        const nextPageBtn = document.querySelector<any>(".ui-icon-arrow-right");
+        if (!nextPageBtn || nextPageBtn.parentElement.className === "disabled") {
+            return false;
+        }
+        nextPageBtn.click();
+        return true;
     }
 
 

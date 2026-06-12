@@ -11,7 +11,7 @@ const logRecorder = new LogRecorder();
 let loginIng = false;
 
 
-export const silentlyLogin = async (bossUserId: string) => {
+export const silentlyLogin = async (bossUserId: string, force = false) => {
     // 保证登录时仅有一个函数执行 防止重复登录(最大等待 500 * 6 = 3000ms)
     let loginCount = 0
     while (loginIng && loginCount < 6) {
@@ -38,7 +38,7 @@ export const silentlyLogin = async (bossUserId: string) => {
     if (!bossUserId) {
         bossUserId = Tools.window?._PAGE?.uid;
     }
-    if (loginStore.login) {
+    if (loginStore.login && !force) {
         logger.info("已经登录，静默登录结束")
         loginIng = false;
         return Promise.resolve();

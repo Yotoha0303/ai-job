@@ -1,0 +1,14 @@
+packages:
+  - "."
+
+onlyBuiltDependencies:
+  - esbuild
+  - javascript-obfuscator
+  - protobufjs
+  - vue-demi
+
+allowBuilds:
+  esbuild: true
+  javascript-obfuscator: true
+  protobufjs: true
+  vue-demi: true

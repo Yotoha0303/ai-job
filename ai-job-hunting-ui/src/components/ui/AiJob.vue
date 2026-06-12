@@ -49,45 +49,87 @@
     <br>
     <br>
 
-    <el-tooltip effect="dark" raw-content content="
-    在Boss中更新了附件简历后请重新导入<p/>
-    - 仅用于AI坐席定制化回复
-    " placement="bottom">
-        <el-button :icon="Upload as any" type="primary" @click="handlerImport"
-                   :disabled="!serverStore.isOnline"
-                   :loading="importResumeLoading"><p
-            style="font-size: 15px">导入简历</p>
-        </el-button>
-    </el-tooltip>
+    <div class="main-actions">
+        <el-tooltip effect="dark" raw-content content="
+        在Boss中更新了附件简历后请重新导入<p/>
+        - 仅用于AI坐席定制化回复
+        " placement="bottom">
+            <el-button class="action-button" :icon="Upload as any" type="primary" @click="handlerImport"
+                       :disabled="!serverStore.isOnline"
+                       :loading="importResumeLoading">
+                <span class="action-label">导入简历</span>
+            </el-button>
+        </el-tooltip>
 
-    <el-tooltip effect="dark" raw-content content="
-    先通过Boss的筛选功能圈选你的意向岗位<p/><span style='color:red;'>在【偏好设置-投递设置】中选择</span><br/>您的投递偏好，用于精准投递岗位
-    " placement="bottom">
-        <el-button :icon="Promotion as any" :type="pushBtnType" @click="handlerPush"><p style="font-size: 15px">
-            {{ pushBtnText }}</p>
-        </el-button>
-    </el-tooltip>
+        <el-tooltip effect="dark" raw-content content="
+        先通过Boss的筛选功能圈选你的意向岗位<p/><span style='color:red;'>在【偏好设置-投递设置】中选择</span><br/>您的投递偏好，用于精准投递岗位
+        " placement="bottom">
+            <el-button class="action-button" :icon="Promotion as any" :type="pushBtnType" @click="handlerPush"
+                       :disabled="autoSearchRunning">
+                <span class="action-label">{{ pushBtnText }}</span>
+            </el-button>
+        </el-tooltip>
 
-    <el-button type="warning" :icon="Collection as any" color="#626aef" @click.stop="handlerAISeatClick" :disabled="!serverStore.isOnline">产品列表</el-button>
-    <el-tooltip effect="dark" raw-content content="
-    AI坐席：<span style='color:red;'>支持试用，点击开关开启试用</span><br/>
-    - 自动响应hr的消息,根据您的简历信息进行定制化回答。<br/>
-    - 高意向职位邮件通知，快速筛选出最合适的职位。<br/>
-    - 快捷发送简历，交换 wx、联系方式。<br/>
-    - hr拒绝挽留，不放过每一个机会。<br/>
-    " placement="bottom">
-        <el-button :icon="Service as any" color="#626aef" :disabled="!serverStore.isOnline">
-            <p style="font-size: 15px">
-                <span>AI坐席 </span>
-                <el-switch active-text="开" inactive-text="关" inline-prompt
-                           style="--el-switch-on-color: #13ce66; --el-switch-off-color: #ff4949"
-                           v-model="userStore.user.aiSeatStatus"
-                           :disabled="!serverStore.isOnline"
-                           @change="handlerAISeatStatusChange"/>
-            </p>
-        </el-button>
-    </el-tooltip>
-    <el-link type="primary" href="https://www.bilibili.com/video/BV1y6PjesEvi"  target="_blank" style="margin-left: 10px;margin-top: 10px;">点击查看AI坐席效果演示</el-link>
+        <el-tooltip effect="dark" raw-content content="
+        自动搜索会按照前端关键词配置从第一条开始依次搜索岗位<p/>
+        - 每次启动都会重新从第一行开始。<br/>
+        - 每个关键词搜索结果停留5分钟后再切换下一条。<br/>
+        - 自动搜索运行期间每8分钟刷新一次页面。<br/>
+        - 倒计时结束时如果自动投递未完成，会顺延2分钟。<br/>
+        - 会保留当前BOSS搜索页已有筛选条件，只替换关键词。<br/>
+        - 搜索过程中可点击停止搜索中断。<br/>
+        " placement="bottom">
+            <el-button class="action-button auto-search-button" :icon="Collection as any" :type="autoSearchBtnType"
+                       @click="handlerAutoSearch"
+                       :disabled="(autoSearchRunning && autoSearchQuickPush) || (!autoSearchRunning && pushStatus === PushStatus.PUSHING) || autoSearchKeywords.length === 0">
+                <span class="action-label">{{ autoSearchBtnText }}</span>
+            </el-button>
+        </el-tooltip>
+
+        <el-tooltip effect="dark" raw-content content="
+        快速投递会按照前端关键词配置从第一条开始依次搜索岗位<p/>
+        - 进入每个关键词结果页后自动投递。<br/>
+        - 当前关键词自动投递完成后，立即搜索下一条关键词。<br/>
+        - 如果自动投递仍在运行，会等待投递完成。<br/>
+        - 会保留当前BOSS搜索页已有筛选条件，只替换关键词。<br/>
+        - 运行期间可点击停止快投中断。<br/>
+        " placement="bottom">
+            <el-button class="action-button quick-push-button" :icon="Promotion as any" :type="quickPushBtnType"
+                       @click="handlerQuickPush"
+                       :disabled="(autoSearchRunning && !autoSearchQuickPush) || (!autoSearchRunning && pushStatus === PushStatus.PUSHING) || autoSearchKeywords.length === 0">
+                <span class="action-label">{{ quickPushBtnText }}</span>
+            </el-button>
+        </el-tooltip>
+        <el-tag v-show="autoSearchRunning" class="auto-search-tag" type="info" effect="plain">
+            {{ autoSearchProgressText }}
+        </el-tag>
+
+        <!-- <el-button type="info" @click="handlerScrollToBottomThenTop" :loading="scrollBottomLoading">
+            <span class="action-label">一键到达页面底部</span>
+        </el-button> -->
+
+        <el-tooltip effect="dark" raw-content content="
+        AI坐席：<span style='color:red;'>支持试用，点击开关开启试用</span><br/>
+        - 自动响应hr的消息,根据您的简历信息进行定制化回答。<br/>
+        - 高意向职位邮件通知，快速筛选出最合适的职位。<br/>
+        - 快捷发送简历，交换 wx、联系方式。<br/>
+        - hr拒绝挽留，不放过每一个机会。<br/>
+        " placement="bottom">
+            <el-button class="action-button" :icon="Service as any" color="#626aef" :disabled="!serverStore.isOnline">
+                <span class="action-label ai-seat-label">
+                    <span>AI坐席</span>
+                    <el-switch active-text="开" inactive-text="关" inline-prompt
+                               style="--el-switch-on-color: #13ce66; --el-switch-off-color: #ff4949"
+                               v-model="userStore.user.aiSeatStatus"
+                               :disabled="!serverStore.isOnline"
+                               @change="handlerAISeatStatusChange"/>
+                </span>
+            </el-button>
+        </el-tooltip>
+        <el-link class="demo-link" type="primary" href="https://www.bilibili.com/video/BV1y6PjesEvi"
+                 target="_blank">点击查看AI坐席效果演示
+        </el-link>
+    </div>
 
     <!-- 固定位置的停止投递按钮 -->
     <div v-show="pushStatus === PushStatus.PUSHING" class="fixed-stop-button">
@@ -228,21 +270,23 @@
 </template>
 
 <script setup lang="ts">
-import axiosOriginal, {AxiosInstance} from "axios";
-import {CircleCloseFilled, PriceTag, Promotion, Service, Shop, Upload, Wallet, Collection, RefreshRight} from '../icons';
-import {h, inject, ref, Ref, onMounted, onUnmounted} from "vue";
-import {PushStatus} from "../../enums";
-import {AbsPlatform} from "../../platform/platform";
-import {Tools} from "../../platform/utils";
-import {ElMessage, fetchWithGM_request, isProdEnv, loginInterceptor, silentlyLogin} from "../../utils/tools";
-import logger from '../../logging'
-import {SSEClient} from "../../utils/sse";
-import {LoginStore, pushResultCount, UserStore} from "../../stores";
-import {ServerStore} from "../../stores/server";
-import {ElNotification} from "element-plus";
-import {LogRecorder} from "../../logging/record";
+import axiosOriginal, { AxiosInstance } from "axios";
+import { ElNotification } from "element-plus";
+import { computed, h, inject, onMounted, onUnmounted, ref, Ref } from "vue";
+import { AUTO_SEARCH_CONFIG } from "../../config/autoSearchConfig";
+import { AUTO_SEARCH_KEYWORDS } from "../../config/autoSearchKeywords";
+import { PushStatus } from "../../enums";
+import logger from '../../logging';
+import { LogRecorder } from "../../logging/record";
+import { AbsPlatform } from "../../platform/platform";
+import { Tools } from "../../platform/utils";
+import { LoginStore, pushResultCount, UserStore } from "../../stores";
+import { DEFAULT_SERVER_URL, ServerStore } from "../../stores/server";
+import { SSEClient } from "../../utils/sse";
+import { ElMessage, fetchWithGM_request, isProdEnv, loginInterceptor, silentlyLogin } from "../../utils/tools";
+import { CircleCloseFilled, Collection, PriceTag, Promotion, RefreshRight, Service, Shop, Upload, Wallet } from '../icons';
 
-import {userRemoteLoad} from "../../stores/remote";
+import { userRemoteLoad } from "../../stores/remote";
 
 const platform = inject('$platform') as AbsPlatform;
 const axios = inject('$axios') as AxiosInstance
@@ -307,9 +351,8 @@ const handleResetServer = async () => {
         await handleUpdateServer();
     } else {
         // 容错处理
-        const DEFAULT_URL = 'https://43.138.246.37/';
-        serverStore.setBaseUrl(DEFAULT_URL);
-        tempServerUrl.value = DEFAULT_URL;
+        serverStore.setBaseUrl(DEFAULT_SERVER_URL);
+        tempServerUrl.value = DEFAULT_SERVER_URL;
         ElMessage.success('已重置为默认服务器地址');
         await handleUpdateServer();
     }
@@ -321,6 +364,63 @@ const pushBtnText = ref<string>('开始投递')
 const aiSeatBuyVisible = ref(false)
 const importResumeLoading = ref<boolean>(false);
 const productListLoading = ref<boolean>(false);
+const scrollBottomLoading = ref<boolean>(false);
+
+interface AutoSearchState {
+    running: boolean;
+    index: number;
+    startedAt: number;
+    nextSearchAt?: number;
+    quickPush?: boolean;
+}
+
+const AUTO_SEARCH_STATE_KEY = 'ai-job:auto-search:static-keywords-v1';
+const AUTO_SEARCH_INTERVAL_MINUTES = 5;
+const AUTO_SEARCH_INTERVAL_MS = AUTO_SEARCH_INTERVAL_MINUTES * 60 * 1000;
+const AUTO_SEARCH_REFRESH_INTERVAL_MINUTES = 8;
+const AUTO_SEARCH_REFRESH_INTERVAL_MS = AUTO_SEARCH_REFRESH_INTERVAL_MINUTES * 60 * 1000;
+const AUTO_SEARCH_PUSH_EXTEND_MINUTES = 2;
+const AUTO_SEARCH_PUSH_EXTEND_MS = AUTO_SEARCH_PUSH_EXTEND_MINUTES * 60 * 1000;
+const AUTO_SEARCH_PUSH_START_DELAY_MS = 2500;
+const isInvalidAutoSearchKeyword = (keyword: string): boolean => {
+    return /^https?:\/\//.test(keyword)
+        || keyword.includes('/@fs/')
+        || keyword.length > 120;
+}
+const autoSearchKeywords = ref<string[]>(
+    AUTO_SEARCH_KEYWORDS
+        .map(item => item.trim())
+        .filter(item => !!item && !isInvalidAutoSearchKeyword(item))
+);
+const autoSearchRunning = ref(false);
+const autoSearchQuickPush = ref(false);
+const autoSearchNextIndex = ref(0);
+const autoSearchCurrentKeyword = ref('');
+const autoSearchNextSearchAt = ref(0);
+const autoSearchRemainingSeconds = ref(0);
+const autoSearchBtnType = computed(() => autoSearchRunning.value && !autoSearchQuickPush.value ? 'warning' : 'primary');
+const autoSearchBtnText = computed(() => autoSearchRunning.value && !autoSearchQuickPush.value ? '停止搜索' : '自动搜索');
+const quickPushBtnType = computed(() => autoSearchRunning.value && autoSearchQuickPush.value ? 'warning' : 'success');
+const quickPushBtnText = computed(() => autoSearchRunning.value && autoSearchQuickPush.value ? '停止快投' : '快速投递');
+const autoSearchProgressText = computed(() => {
+    if (!autoSearchRunning.value) {
+        return `共 ${autoSearchKeywords.value.length} 个关键词`;
+    }
+    const modeText = autoSearchQuickPush.value ? '快速投递' : '自动搜索';
+    const currentNo = Math.min(autoSearchNextIndex.value, autoSearchKeywords.value.length);
+    const currentKeywordText = autoSearchCurrentKeyword.value ? `当前：${autoSearchCurrentKeyword.value}` : '准备开始';
+    if (!autoSearchNextSearchAt.value) {
+        return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywords.value.length})，正在设置下一次搜索时间`;
+    }
+    if (autoSearchQuickPush.value) {
+        return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywords.value.length})，投递完成后立即搜索下一条，兜底倒计时 ${formatAutoSearchCountdown(autoSearchRemainingSeconds.value)}`;
+    }
+    return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywords.value.length})，下次搜索 ${formatAutoSearchTime(autoSearchNextSearchAt.value)}，倒计时 ${formatAutoSearchCountdown(autoSearchRemainingSeconds.value)}`;
+});
+let autoSearchTimer: number | null = null;
+let autoSearchPushTimer: number | null = null;
+let autoSearchCountdownTimer: number | null = null;
+let autoSearchRefreshTimer: number | null = null;
 
 // 创建日志记录器实例
 const logRecorder = new LogRecorder();
@@ -502,8 +602,460 @@ const handlerPush = () => {
 
 // 固定按钮停止投递处理
 const handlerFixedStopPush = () => {
+    if (autoSearchRunning.value && autoSearchQuickPush.value) {
+        stopAutoSearch();
+        scrollToTop();
+        return;
+    }
     pausePush();
     scrollToTop();
+}
+
+const handlerScrollToBottomThenTop = async () => {
+    if (scrollBottomLoading.value) {
+        return;
+    }
+    scrollBottomLoading.value = true;
+    try {
+        await platform.scrollToBottomThenTop();
+        ElMessage({
+            message: "已到达页面底部并回到顶部",
+            type: 'success',
+            duration: 2000
+        })
+    } catch (error: any) {
+        logger.warn("一键到达页面底部失败", error)
+        ElMessage({
+            message: "一键到达页面底部失败：" + (error?.message || error),
+            type: 'error',
+            duration: 3000
+        })
+    } finally {
+        scrollBottomLoading.value = false;
+    }
+}
+
+const readAutoSearchState = (): AutoSearchState | null => {
+    const rawState = localStorage.getItem(AUTO_SEARCH_STATE_KEY);
+    if (!rawState) {
+        return null;
+    }
+    try {
+        const state = JSON.parse(rawState) as AutoSearchState;
+        if (typeof state?.running !== 'boolean' || typeof state?.index !== 'number') {
+            localStorage.removeItem(AUTO_SEARCH_STATE_KEY);
+            return null;
+        }
+        return {
+            running: state.running,
+            index: normalizeAutoSearchIndex(state.index),
+            startedAt: Number(state.startedAt) || Date.now(),
+            nextSearchAt: Number(state.nextSearchAt) || 0,
+            quickPush: !!state.quickPush,
+        };
+    } catch (error) {
+        logger.warn("读取自动搜索状态失败", error);
+        localStorage.removeItem(AUTO_SEARCH_STATE_KEY);
+        return null;
+    }
+}
+
+const saveAutoSearchState = (state: AutoSearchState) => {
+    localStorage.setItem(AUTO_SEARCH_STATE_KEY, JSON.stringify({
+        ...state,
+        index: normalizeAutoSearchIndex(state.index),
+    }));
+}
+
+const normalizeAutoSearchIndex = (index: number): number => {
+    if (!Number.isFinite(index)) {
+        return 0;
+    }
+    return Math.max(0, Math.min(Math.floor(index), autoSearchKeywords.value.length));
+}
+
+const clearAutoSearchTimer = () => {
+    if (autoSearchTimer !== null) {
+        clearTimeout(autoSearchTimer);
+        autoSearchTimer = null;
+    }
+}
+
+const clearAutoSearchCountdownTimer = () => {
+    if (autoSearchCountdownTimer !== null) {
+        clearInterval(autoSearchCountdownTimer);
+        autoSearchCountdownTimer = null;
+    }
+}
+
+const clearAutoSearchPushTimer = () => {
+    if (autoSearchPushTimer !== null) {
+        clearTimeout(autoSearchPushTimer);
+        autoSearchPushTimer = null;
+    }
+}
+
+const clearAutoSearchRefreshTimer = () => {
+    if (autoSearchRefreshTimer !== null) {
+        clearTimeout(autoSearchRefreshTimer);
+        autoSearchRefreshTimer = null;
+    }
+}
+
+const startAutoSearchRefreshTimer = () => {
+    if (autoSearchRefreshTimer !== null) {
+        return;
+    }
+    autoSearchRefreshTimer = window.setTimeout(() => {
+        autoSearchRefreshTimer = null;
+        const state = readAutoSearchState();
+        if (!state?.running) {
+            return;
+        }
+        logRecorder.info(`自动搜索运行满${AUTO_SEARCH_REFRESH_INTERVAL_MINUTES}分钟，自动刷新页面`);
+        window.location.reload();
+    }, AUTO_SEARCH_REFRESH_INTERVAL_MS);
+}
+
+const formatAutoSearchTime = (timestamp: number): string => {
+    const date = new Date(timestamp);
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${hours}:${minutes}:${seconds}`;
+}
+
+const formatAutoSearchCountdown = (seconds: number): string => {
+    const safeSeconds = Math.max(0, Math.floor(seconds));
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+    const restSeconds = safeSeconds % 60;
+    if (hours > 0) {
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(restSeconds).padStart(2, '0')}`;
+    }
+    return `${String(minutes).padStart(2, '0')}:${String(restSeconds).padStart(2, '0')}`;
+}
+
+const refreshAutoSearchCountdown = () => {
+    if (!autoSearchNextSearchAt.value) {
+        autoSearchRemainingSeconds.value = 0;
+        return;
+    }
+    autoSearchRemainingSeconds.value = Math.max(0, Math.ceil((autoSearchNextSearchAt.value - Date.now()) / 1000));
+}
+
+const startAutoSearchCountdown = () => {
+    clearAutoSearchCountdownTimer();
+    if (!autoSearchNextSearchAt.value) {
+        autoSearchRemainingSeconds.value = 0;
+        return;
+    }
+    refreshAutoSearchCountdown();
+    autoSearchCountdownTimer = window.setInterval(refreshAutoSearchCountdown, 1000);
+}
+
+const applyAutoSearchState = (state: AutoSearchState | null) => {
+    if (!state?.running) {
+        autoSearchRunning.value = false;
+        autoSearchQuickPush.value = false;
+        autoSearchNextIndex.value = 0;
+        autoSearchCurrentKeyword.value = '';
+        autoSearchNextSearchAt.value = 0;
+        autoSearchRemainingSeconds.value = 0;
+        clearAutoSearchCountdownTimer();
+        clearAutoSearchRefreshTimer();
+        return;
+    }
+
+    autoSearchRunning.value = true;
+    autoSearchQuickPush.value = !!state.quickPush;
+    startAutoSearchRefreshTimer();
+    autoSearchNextIndex.value = normalizeAutoSearchIndex(state.index);
+    autoSearchCurrentKeyword.value = autoSearchNextIndex.value > 0
+        ? autoSearchKeywords.value[autoSearchNextIndex.value - 1]
+        : '';
+    autoSearchNextSearchAt.value = Number(state.nextSearchAt) || 0;
+    startAutoSearchCountdown();
+}
+
+const getAutoSearchBaseUrl = (): URL => new URL(AUTO_SEARCH_CONFIG.baseUrl);
+
+const isAutoSearchPageUrl = (url: URL): boolean => {
+    const baseUrl = getAutoSearchBaseUrl();
+    return url.origin === baseUrl.origin && url.pathname === baseUrl.pathname;
+}
+
+const applyAutoSearchDefaultParams = (url: URL) => {
+    Object.entries(AUTO_SEARCH_CONFIG.defaultParams).forEach(([key, value]) => {
+        if (!url.searchParams.has(key)) {
+            url.searchParams.set(key, value);
+        }
+    });
+}
+
+const getSortedSearchParamPairs = (url: URL): string[] => {
+    const pairs: string[] = [];
+    url.searchParams.forEach((value, key) => {
+        pairs.push(`${key}=${value}`);
+    });
+    return pairs.sort();
+}
+
+const hasSameSearchParams = (currentUrl: URL, targetUrl: URL): boolean => {
+    const currentPairs = getSortedSearchParamPairs(currentUrl);
+    const targetPairs = getSortedSearchParamPairs(targetUrl);
+    return currentPairs.length === targetPairs.length
+        && currentPairs.every((pair, index) => pair === targetPairs[index]);
+}
+
+const buildBossSearchUrl = (keyword: string): string => {
+    const currentUrl = new URL(window.location.href);
+    const url = AUTO_SEARCH_CONFIG.reuseCurrentSearchParams && isAutoSearchPageUrl(currentUrl)
+        ? currentUrl
+        : getAutoSearchBaseUrl();
+
+    applyAutoSearchDefaultParams(url);
+    url.searchParams.set("query", keyword);
+    return url.toString();
+}
+
+const isSameBossSearchUrl = (targetUrl: string): boolean => {
+    const currentUrl = new URL(window.location.href);
+    const target = new URL(targetUrl);
+    return currentUrl.origin === target.origin
+        && currentUrl.pathname === target.pathname
+        && hasSameSearchParams(currentUrl, target);
+}
+
+const repairMalformedAutoSearchUrl = (state: AutoSearchState): boolean => {
+    const currentUrl = new URL(window.location.href);
+    const currentQuery = currentUrl.searchParams.get("query") || '';
+    if (!isInvalidAutoSearchKeyword(currentQuery)) {
+        return false;
+    }
+
+    const keywordIndex = normalizeAutoSearchIndex(state.index) - 1;
+    const keyword = autoSearchKeywords.value[keywordIndex];
+    if (!keyword) {
+        return false;
+    }
+
+    const targetUrl = buildBossSearchUrl(keyword);
+    logRecorder.warn(`自动搜索关键词异常，正在修正为：${keyword}`);
+    if (!isSameBossSearchUrl(targetUrl)) {
+        window.location.assign(targetUrl);
+        return true;
+    }
+    return false;
+}
+
+const scheduleNextAutoSearchAt = (nextSearchAt: number) => {
+    const state = readAutoSearchState();
+    if (!state?.running) {
+        applyAutoSearchState(null);
+        return;
+    }
+    const nextState = {
+        ...state,
+        nextSearchAt,
+    };
+    saveAutoSearchState(nextState);
+    applyAutoSearchState(nextState);
+
+    clearAutoSearchTimer();
+    autoSearchTimer = window.setTimeout(runNextAutoSearch, Math.max(0, nextSearchAt - Date.now()));
+}
+
+const scheduleNextAutoSearch = (delayMs: number) => {
+    scheduleNextAutoSearchAt(Date.now() + delayMs);
+}
+
+const extendAutoSearchForRunningPush = (): boolean => {
+    if (pushStatus.value !== PushStatus.PUSHING) {
+        return false;
+    }
+    const nextSearchAt = Date.now() + AUTO_SEARCH_PUSH_EXTEND_MS;
+    logRecorder.info(`自动投递未结束，下一次搜索顺延${AUTO_SEARCH_PUSH_EXTEND_MINUTES}分钟`);
+    scheduleNextAutoSearchAt(nextSearchAt);
+    return true;
+}
+
+const isCurrentAutoSearchResultPage = (state: AutoSearchState): boolean => {
+    const keywordIndex = normalizeAutoSearchIndex(state.index) - 1;
+    const keyword = autoSearchKeywords.value[keywordIndex];
+    return !!keyword && isSameBossSearchUrl(buildBossSearchUrl(keyword));
+}
+
+const pauseAutoSearchPush = () => {
+    clearAutoSearchPushTimer();
+    if (pushStatus.value === PushStatus.PUSHING) {
+        pausePush();
+    }
+}
+
+const scheduleAutoSearchPush = (state: AutoSearchState) => {
+    clearAutoSearchPushTimer();
+    if (!state.running || !isCurrentAutoSearchResultPage(state)) {
+        return;
+    }
+    autoSearchPushTimer = window.setTimeout(() => {
+        const latestState = readAutoSearchState();
+        if (!latestState?.running || !isCurrentAutoSearchResultPage(latestState)) {
+            return;
+        }
+        if (pushStatus.value === PushStatus.PUSHING) {
+            return;
+        }
+        logRecorder.info("自动搜索已进入结果页，启动自动投递");
+        startPush();
+    }, AUTO_SEARCH_PUSH_START_DELAY_MS);
+}
+
+const finishAutoSearch = () => {
+    const quickPush = autoSearchQuickPush.value;
+    clearAutoSearchTimer();
+    pauseAutoSearchPush();
+    localStorage.removeItem(AUTO_SEARCH_STATE_KEY);
+    applyAutoSearchState(null);
+    logRecorder.info(quickPush ? "快速投递完成" : "自动搜索完成");
+    ElMessage({
+        message: quickPush ? "快速投递完成" : "自动搜索完成",
+        type: 'success',
+        duration: 3000
+    })
+}
+
+const stopAutoSearch = () => {
+    const quickPush = autoSearchQuickPush.value;
+    clearAutoSearchTimer();
+    pauseAutoSearchPush();
+    localStorage.removeItem(AUTO_SEARCH_STATE_KEY);
+    applyAutoSearchState(null);
+    logRecorder.info(quickPush ? "已停止快速投递" : "已停止自动搜索");
+    ElMessage({
+        message: quickPush ? "已停止快速投递" : "已停止自动搜索",
+        type: 'warning',
+        duration: 3000
+    })
+}
+
+const runNextAutoSearch = () => {
+    const state = readAutoSearchState();
+    if (!state?.running) {
+        applyAutoSearchState(null);
+        return;
+    }
+    if (extendAutoSearchForRunningPush()) {
+        return;
+    }
+    if (state.index >= autoSearchKeywords.value.length) {
+        finishAutoSearch();
+        return;
+    }
+
+    pauseAutoSearchPush();
+    const keyword = autoSearchKeywords.value[state.index];
+    const nextState = {
+        ...state,
+        index: state.index + 1,
+        nextSearchAt: 0,
+    };
+    saveAutoSearchState(nextState);
+    applyAutoSearchState(nextState);
+    logRecorder.info(`${state.quickPush ? '快速投递搜索关键词' : '自动搜索关键词'}(${nextState.index}/${autoSearchKeywords.value.length})：${keyword}`);
+
+    const targetUrl = buildBossSearchUrl(keyword);
+    if (isSameBossSearchUrl(targetUrl)) {
+        scheduleNextAutoSearch(AUTO_SEARCH_INTERVAL_MS);
+        scheduleAutoSearchPush(nextState);
+        return;
+    }
+    window.location.assign(targetUrl);
+}
+
+const startAutoSearch = (quickPush = false) => {
+    if (!loginInterceptor()) {
+        return;
+    }
+    if (pushStatus.value === PushStatus.PUSHING) {
+        ElMessage({
+            message: "投递运行中，请先停止投递",
+            type: 'warning',
+            duration: 3000
+        })
+        return;
+    }
+    if (autoSearchKeywords.value.length === 0) {
+        ElMessage({
+            message: "关键词库为空，请先维护 src/config/autoSearchKeywords.ts",
+            type: 'error',
+            duration: 3000
+        })
+        return;
+    }
+
+    const initState: AutoSearchState = {
+        running: true,
+        index: 0,
+        startedAt: Date.now(),
+        nextSearchAt: 0,
+        quickPush,
+    };
+    saveAutoSearchState(initState);
+    applyAutoSearchState(initState);
+    logRecorder.info(`${quickPush ? '开始快速投递' : '开始自动搜索'}，共${autoSearchKeywords.value.length}个关键词`);
+    runNextAutoSearch();
+}
+
+const resumeAutoSearch = () => {
+    const state = readAutoSearchState();
+    if (!state?.running) {
+        applyAutoSearchState(null);
+        return;
+    }
+    if (state.index >= autoSearchKeywords.value.length) {
+        finishAutoSearch();
+        return;
+    }
+
+    applyAutoSearchState(state);
+    if (repairMalformedAutoSearchUrl(state)) {
+        return;
+    }
+    const nextSearchAt = state.nextSearchAt && state.nextSearchAt > Date.now()
+        ? state.nextSearchAt
+        : Date.now() + AUTO_SEARCH_INTERVAL_MS;
+    scheduleNextAutoSearchAt(nextSearchAt);
+    scheduleAutoSearchPush(state);
+}
+
+const handlerAutoSearch = () => {
+    if (autoSearchRunning.value) {
+        stopAutoSearch();
+        return;
+    }
+    startAutoSearch();
+}
+
+const handlerQuickPush = () => {
+    if (autoSearchRunning.value && autoSearchQuickPush.value) {
+        stopAutoSearch();
+        return;
+    }
+    startAutoSearch(true);
+}
+
+const continueQuickPushAfterPushComplete = () => {
+    const state = readAutoSearchState();
+    if (!state?.running || !state.quickPush) {
+        return;
+    }
+    if (!isCurrentAutoSearchResultPage(state)) {
+        return;
+    }
+    clearAutoSearchTimer();
+    logRecorder.info("快速投递当前关键词已完成，立即搜索下一条");
+    runNextAutoSearch();
 }
 
 /**
@@ -518,6 +1070,10 @@ const selfDefPushCountLimitChange = (val: number) => {
 const mockPush = ref<boolean>(false)
 
 const startPush = () => {
+
+    if (pushStatus.value === PushStatus.PUSHING) {
+        return;
+    }
 
     if (!loginInterceptor()) {
         return;
@@ -547,6 +1103,7 @@ const startPush = () => {
             pushBtnText.value = '开始投递'
             // 停止更新投递记录
             stopRecordsUpdate();
+            continueQuickPushAfterPushComplete();
         }, 200)
     })
 }
@@ -677,9 +1234,9 @@ const handlerAISeatStatusChange = async (val: boolean) => {
         return;
     }
 
-    return axios.post("/api/user/save/preference", {
+    return silentlyLogin("", true).then(_ => axios.post("/api/user/save/preference", {
         aiSeatStatus: val ? 1 : 0
-    }).then(resp => {
+    })).then(resp => {
         if (val && resp.data.message && resp.data.message !== "成功") {
             ElNotification({
                 message: resp.data.message,
@@ -715,8 +1272,16 @@ if (!loginStore.login && !loginStore.loginFailStatus) {
 }
 
 // 组件卸载时清理定时器
+onMounted(() => {
+    resumeAutoSearch();
+});
+
 onUnmounted(() => {
     stopRecordsUpdate();
+    clearAutoSearchTimer();
+    clearAutoSearchPushTimer();
+    clearAutoSearchCountdownTimer();
+    clearAutoSearchRefreshTimer();
 });
 
 // --------------------------------------------------流程处理-------------------------------------------------------------
@@ -789,6 +1354,57 @@ onUnmounted(() => {
 
 .server-mode-tip {
     margin-left: auto;
+}
+
+.main-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+}
+
+.action-button {
+    height: 36px;
+}
+
+.auto-search-button {
+    min-width: 108px;
+}
+
+.quick-push-button {
+    min-width: 108px;
+}
+
+.action-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-size: 15px;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.ai-seat-label {
+    gap: 8px;
+}
+
+.auto-search-tag {
+    max-width: min(620px, 100%);
+    min-height: 32px;
+    height: auto;
+    padding: 6px 10px;
+    white-space: normal;
+    vertical-align: middle;
+}
+
+:deep(.auto-search-tag .el-tag__content) {
+    white-space: normal;
+    line-height: 1.35;
+}
+
+.demo-link {
+    margin-top: 0;
 }
 
 .my-header {

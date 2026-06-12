@@ -334,7 +334,14 @@ export enum Platform {
     MAC = 'mac'
 }
 
-export const simulateScrollToEnd = async (platform?: Platform) => {
+export const simulateScrollToEnd = async (platform?: Platform, selector?: string | Element | null) => {
+    if (selector) {
+        const scrollHeight = scrollElementToBottom(selector);
+        if (scrollHeight > 0) {
+            return scrollHeight;
+        }
+    }
+
     const isMac = platform === Platform.MAC || navigator.platform.toUpperCase().includes('MAC');
     const modifierKey = isMac ? 'Meta' : 'Control';
     const modifierSymbol = isMac ? '⌘' : 'Ctrl';
@@ -369,7 +376,9 @@ export const simulateScrollToEnd = async (platform?: Platform) => {
         }
 
         // 等待浏览器处理事件
-        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (!document.hidden) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        }
     } catch (error) {
         console.warn('键盘事件触发失败，使用备选方案');
     }
@@ -392,9 +401,10 @@ export const simulateScrollToEnd = async (platform?: Platform) => {
     if (window.scrollY !== maxScroll) {
         window.scrollTo({
             top: maxScroll,
-            behavior: 'smooth'
+            behavior: document.hidden ? 'auto' : 'smooth'
         });
     }
+    return maxScroll;
 };
 
 // 使用示例

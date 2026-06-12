@@ -169,6 +169,10 @@ public class UserService {
 
     public void savePreference(UserInfoVO userInfoVO) {
         Long userId = HeaderContext.getHeader().getUserId();
+        if (Objects.isNull(userId) || userId <= 0) {
+            throw new ApplicationException(BizCodeEnum.NOT_LOGIN);
+        }
+
         LambdaUpdateWrapper<UserInfoDO> condition = new LambdaUpdateWrapper<>();
         condition.eq(UserInfoDO::getId, userId);
         if (Objects.nonNull(userInfoVO.getPreference())) {
@@ -182,7 +186,7 @@ public class UserService {
         }
 
         // 如果尝试开启AI坐席，则判断是否有在有效期内的AI坐席产品
-        if (Objects.equals(userInfoVO.getAiSeatStatus(), AiSeatStatusEnum.OPEN.getBool())) {
+        if (Boolean.TRUE.equals(userInfoVO.getAiSeatStatus())) {
             Set<Integer> productTypeSet = productService.queryUserValidAllProductType(userId);
             Integer productType = ProductTypeEnum.AI_SEAT.getCode();
             String userIdAndProductTypeKey = userId + "-" + productType;
@@ -200,9 +204,17 @@ public class UserService {
                 HeaderContext.getHeader().setRespMsg("AI坐席试用已开启");
             }
         }
-        condition.set(UserInfoDO::getAiSeatStatus, userInfoVO.getAiSeatStatus());
+        if (Objects.nonNull(userInfoVO.getAiSeatStatus())) {
+            condition.set(UserInfoDO::getAiSeatStatus,
+                    Boolean.TRUE.equals(userInfoVO.getAiSeatStatus())
+                            ? AiSeatStatusEnum.OPEN.getCode()
+                            : AiSeatStatusEnum.NOT_OPEN.getCode());
+        }
         // 必须要填入实体对象，mybatisPlus才能自动填充（set的字段还是按照condition中set的字段来更新，不用担心实体对象为空更新进去）
-        userInfoMapper.update(new UserInfoDO(), condition);
+        int updateRows = userInfoMapper.update(new UserInfoDO(), condition);
+        if (updateRows <= 0) {
+            throw new ApplicationException("保存用户配置失败：用户不存在或数据库未更新");
+        }
     }
 
 

@@ -1,9 +1,9 @@
-import {reactive, ref} from 'vue'
-import {defineStore} from 'pinia'
-import {PreferenceConfig, User} from "./types";
+import { defineStore } from 'pinia';
+import { reactive, ref } from 'vue';
 import logger from "../logging";
-import platform, {PlatformTypeEnum} from "../platform/platform";
-import {TampermonkeyApi} from "../platform/utils";
+import { PlatformTypeEnum } from "../platform/platform";
+import { TampermonkeyApi } from "../platform/utils";
+import { PreferenceConfig, User } from "./types";
 
 export const pushResultCount = defineStore('pushResultCount', () => {
     const notMatchCount = ref(0)

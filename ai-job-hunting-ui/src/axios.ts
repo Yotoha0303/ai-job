@@ -2,7 +2,7 @@ import axios from "axios";
 import {ElMessage} from "./utils/tools";
 import {BizCodeEnum} from "./types";
 import {ProductStore} from "./stores";
-import {ServerStore} from "./stores/server";
+import { DEFAULT_SERVER_URL, ServerStore } from "./stores/server";
 
 
 /**
@@ -27,7 +27,7 @@ request.interceptors.request.use(req => {
             req.baseURL = serverStore.baseUrl
         } catch (e) {
             // 如果在 Pinia 初始化前调用了 axios，回退到默认地址
-            req.baseURL = 'https://43.138.246.37/'
+            req.baseURL = DEFAULT_SERVER_URL
         }
 
         let authorization = localStorage.getItem('Authorization');
@@ -69,13 +69,14 @@ request.interceptors.response.use((resp: any) => {
         if (result.code === 401) {
             let authorization = localStorage.getItem('Authorization');
             if (authorization) {
+                localStorage.removeItem('Authorization');
                 ElMessage({
                     type: "error",
                     message: "登录过期，请刷新页面重试"
                 });
-                return;
+                return Promise.reject(result.message || '登录已过期')
             }
-            return Promise.reject(result.message)
+            return Promise.reject(result.message || '登录已过期')
         }
 
         if (!result.code || result.code === 500 || result.code >= 5000) {

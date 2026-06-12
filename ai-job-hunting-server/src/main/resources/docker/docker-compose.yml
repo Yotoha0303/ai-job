@@ -1,29 +1,54 @@
-version: "3"
+name: ai-job-hunting
 
 services:
-  ai-job:
-    container_name: "ai-job"
-    image: "ai-job:1.0"
-    networks:
-      - data_smart_course
-    ports:
-      - "9100:9100"
-      - "6768:6768"
-    volumes:
-      - /app/ai-job/:/app/logs
-    # 会覆盖dockerfile中的cmd命令
-    command: '/app/ai-job.jar --smart.config.webui.port=6768 --smart.config.desc.infer=true'
-    privileged: true
-
-    # 如果使用docker部署，并使用默认properties文件，请指定mysql.host环境变量
+  mysql:
+    image: mysql:8.0
+    container_name: ai-job-mysql
+    restart: unless-stopped
     environment:
-      - TZ=Asia/Shanghai
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root0303}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_job}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - ai-job-mysql-data:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
 
+  ai-job:
+    container_name: ai-job
+    image: ai-job:1.0
+    build:
+      context: ../../../..
+      dockerfile: src/main/resources/docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "${AI_JOB_PORT:-9100}:9100"
+      - "${SMART_CONFIG_PORT:-6768}:6768"
+    volumes:
+      - ai-job-logs:/app/logs
+    environment:
+      TZ: Asia/Shanghai
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-ai_job}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root0303}
+      SPRING_SQL_INIT_MODE: always
+    command:
+      - /app/ai-job.jar
+      - --smart.config.webui.port=6768
+      - --smart.config.desc.infer=true
 
-# 我这里已经存在这个网络了
-networks:
-  data_smart_course:
-    external: true
-
-
-
+volumes:
+  ai-job-mysql-data:
+  ai-job-logs:

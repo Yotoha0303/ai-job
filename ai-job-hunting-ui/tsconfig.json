@@ -15,7 +15,7 @@
     "baseUrl": ".",
     "removeComments": true
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue", "src/components/ui/Product"],
   "references": [
     {
       "path": "./tsconfig.node.json"

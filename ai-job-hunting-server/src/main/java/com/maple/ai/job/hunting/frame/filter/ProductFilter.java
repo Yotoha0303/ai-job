@@ -18,6 +18,7 @@ import jakarta.servlet.*;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
@@ -55,6 +56,9 @@ public class ProductFilter implements Filter {
     @Resource
     private UserAIConfigService userAIConfigService;
 
+    @Value("${product.permission.skip:false}")
+    private boolean skipPermissionCheck;
+
     @PostConstruct
     public void init() {
         log.info("初始化产品uri校验开始");
@@ -65,6 +69,11 @@ public class ProductFilter implements Filter {
 
     @Override
     public void doFilter(ServletRequest servletRequest, ServletResponse servletResponse, FilterChain filterChain) throws IOException, ServletException {
+        if (skipPermissionCheck) {
+            filterChain.doFilter(servletRequest, servletResponse);
+            return;
+        }
+
         HttpServletRequest request = (HttpServletRequest) servletRequest;
         HttpServletResponse response = (HttpServletResponse) servletResponse;
 

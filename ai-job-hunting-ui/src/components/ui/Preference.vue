@@ -332,7 +332,7 @@ import {ElMessage} from "../../utils/tools";
 import {UserStore} from '../../stores'
 import {AxiosInstance} from "axios";
 import {PreferenceConfig} from "../../stores/types";
-import {loginInterceptor} from "../../utils/tools";
+import {loginInterceptor, silentlyLogin} from "../../utils/tools";
 import {Tools} from "../../platform/utils";
 import {AbsPlatform} from "../../platform/platform";
 
@@ -468,10 +468,10 @@ const submitForm = async (formEl: FormInstance | undefined) => {
     TampermonkeyApi.GmSetValue(mirrorKey, userStore.user)
     TampermonkeyApi.GmSetValue(globalMirrorKey, userStore.user)
 
-    await axios.post("/api/user/save/preference", {
+    await silentlyLogin("", true).then(_ => axios.post("/api/user/save/preference", {
         ...userStore.user,
         aiSeatStatus: userStore.user.aiSeatStatus ? 1 : 0
-    })
+    }))
         .then(resp => {
             ElMessage({
                 message: "偏好设置已同步到服务器",

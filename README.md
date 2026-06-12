@@ -1,134 +1,320 @@
-> [!CAUTION]
-> [灵感回路 idealoop.top](https://idealoop.top)
->
-> 灵感回路💡: 一个面向 AI 时代独立开发者、创业者与副业探索者的 Idea 发现、评估与讨论社区。
+# AI Job Hunting
 
-<br/>
+AI Job Hunting 是一个面向 Boss 直聘的求职自动化项目。项目通过浏览器用户脚本嵌入 Boss 直聘页面，提供批量投递、自动搜索、快速投递、AI 坐席、消息辅助回复、简历导入和高意向通知等能力；后端负责 AI 调用、用户配置、订单支付、数据持久化和 SSE 通知。
 
----
+本仓库基于原项目二次维护：
 
+- 原作者：`github.com/yangfeng20`
+- 旧版说明：[README-old.md](./README-old.md)
+- 部署参考：[部署指南v1.md](./部署指南v1.md)
 
-# 🎉 AI 工作猎手 (AI Job Hunting) - 正式开源！
+## 功能
 
-**找工作，用 AI 工作猎手！让 AI 成为您的求职分身，24/7 在线助您斩获 Offer。**
+- 批量投递：按当前 Boss 搜索结果批量沟通岗位，支持单次投递数量限制。
+- 自动搜索 New!：按关键词库依次搜索岗位，每个关键词停留一段时间后切换下一条。
+- 快速投递 New!：按关键词搜索岗位，当前关键词投递完成后立即搜索下一条。
+- 搜索参数复用 New!：自动搜索和快速投递会保留当前 Boss 搜索页的筛选条件，只替换关键词。
+- 关键词库 New!：前端维护固定关键词列表，适合按岗位方向批量搜索。
+- AI 坐席：结合简历信息辅助回复 HR 消息，支持预设问题、拒绝挽留、交换联系方式等场景。
+- 简历导入：从 Boss 侧导入简历信息，供 AI 回复和偏好配置使用。
+- 高意向通知：根据关键词、对话轮数等条件发送邮件通知。
+- 商业化能力：后端包含支付宝订单、产品权限、试用能力等模块。
 
-本项目现已正式开源！您可以选择：
-1. **个人自用**: 免费部署后端，通过 AI 自动投递、智能回复，大幅提升找工作效率。
-2. **商业运营 (赚米)**: 内置完整的支付宝支付系统，您可以部署后作为服务商，为广大求职者提供 AI 赋能服务。
-
-> **🚀 快速开始**: 请阅读 [部署指南v1.md](./部署指南v1.md) 进行后端部署。部署完成后，在 UI 插件的“服务器配置”中修改 API 地址即可使用。
-
-> 配置服务器地址,点击测试连接配置到新的服务器
-![](file/server_add.png)
-
----
-
-## 🏗️ 项目架构
-
-本项目采用前后端分离架构，专为浏览器环境深度定制：
+## 架构
 
 ```text
-[ 浏览器 (Boss直聘) ] <--- 注入 --- [ UI 脚本 (Vue 3 + Vite) ]
-                                          |
-                                   (HTTPS 请求 / SSE)
-                                          |
-                                   [ Nginx 反向代理 ]
-                                          |
-                                   [ 后端 Server (Spring Boot 3) ]
-                                     /      |      \
-                              [ Spring AI ] [ MySQL ] [ 支付宝 ]
-                                (Kimi/GPT)
+Boss 直聘页面
+  |
+  | 注入用户脚本
+  v
+ai-job-hunting-ui
+Vue 3 + Vite + vite-plugin-monkey + Element Plus
+  |
+  | HTTP / SSE
+  v
+ai-job-hunting-server
+Spring Boot 3 + Spring AI + MyBatis Plus
+  |
+  +-- MySQL
+  +-- OpenAI Compatible / Kimi
+  +-- Alipay
+  +-- SmartConfig
 ```
 
-- **前端 (UI)**: 基于 `vite-plugin-monkey` 构建的高级油猴脚本，完美嵌入 Boss 直聘界面。
-- **后端 (Server)**: 基于 Spring Boot 3，集成 Spring AI 框架，支持多模型池化管理。
-- **协议层**: 自研 WebSocket Hook，实时拦截并解析 Boss 直聘的 Protobuf 通讯协议。
-- 页面ui脚本说明
-  - 根目录[ai-job-hunting.user.js](ai-job-hunting.user.js)脚本为依赖cdn版本，部分网络可能不可用
-  - 根目录[ai-job-hunting.bundle.user.js](ai-job-hunting.bundle.user.js)为包含依赖版本，无需cdn下载依赖，如果页面反复刷新也不显示ui，可以切换为当前脚本
+## 目录
 
+```text
+.
+├── ai-job-hunting-ui/       # 浏览器用户脚本前端
+├── ai-job-hunting-server/   # Spring Boot 后端
+├── file/                    # README 截图素材
+├── common/                  # 关键词库等辅助材料
+├── Makefile                 # 常用开发和部署命令
+├── README-old.md            # 原 README 归档
+└── 部署指南v1.md             # 原部署文档
+```
 
-> 随便提一句，云厂商的策略都是老用户与狗不允许入内,加上token的消耗，还不够续费服务器的
-> 所以服务器将从2026年4月13左右关停，现在已经支持本地投递了
-> 如果需要使用ai相关功能，请切换到其他人部署的服务器，或者仔细部署。
-![示例](/file/server.png)
----
+## 环境要求
 
-## AI工作猎手
-<br/>
+- JDK 17
+- Maven 3.8+
+- Node.js 18+
+- pnpm
+- Docker 和 Docker Compose，可选，用于启动 MySQL 或整套服务
+- Tampermonkey 或兼容的用户脚本管理器
 
-- **`找工作，用AI工作猎手！让AI帮您找工作！`** AI坐席：【DeepSeek+ChatGpt】赋能，ai助理作为您的求职者分身24小时 * 7在线找工作，并结合您的简历信息定制化回复。批量投递，自动发送简历，交换联系方式。hr拒绝挽留。高意向邮件通知，让您不错过每一份工作机会。
-  <br/>
----
+Windows PowerShell 如果拦截 `pnpm` 脚本，可以使用 `pnpm.cmd`。
 
-![示例](/file/ai_seat.png)
-![示例](/file/home.png)
-![示例1](/file/ai_config.png)
+## 快速开始
 
+### 1. 准备后端配置
 
-### 效果展示
-- \- 点击下方链接观看效果演示。
-- \- <a href="https://www.bilibili.com/video/BV1y6PjesEvi" target="_blank">AI工作猎手效果演示</a>
+真实配置文件不会提交到 Git。首次启动前从 example 文件复制：
 
-### 视频教程
-- \- 点击下方链接观看视频教程。
-- \- <a href="https://www.bilibili.com/video/BV1HKAyebESp" target="_blank">AI工作猎手使用教程</a>
+```powershell
+Copy-Item ai-job-hunting-server/src/main/resources/application.properties.example ai-job-hunting-server/src/main/resources/application.properties
+Copy-Item ai-job-hunting-server/src/main/resources/application-dev.properties.example ai-job-hunting-server/src/main/resources/application-dev.properties
+```
 
-## 安装使用
-- [greasyfork搜索:(AI工作猎手)](https://greasyfork.org/zh-CN/scripts/527733)
-- 或者下载项目中的`ai-job-hunting.user.js`文件，通过油猴本地脚本导入。
-- 或者打开浏览器输入地址油猴自动安装：[https://gitee.com/yangfeng20/ai-job/raw/master/ai-job-hunting.user.js](https://gitee.com/yangfeng20/ai-job/raw/master/ai-job-hunting.user.js)
-- 记得打开浏览器的开发者模式，新版本油猴需要打开开发者模式才能运行脚本。
-- Boss首页没有功能面板，要在工作列表页面才有功能面板：[https://www.zhipin.com/web/geek/job](https://www.zhipin.com/web/geek/job)
+需要重点修改：
 
+```properties
+spring.ai.kimi.api-key=xxx
+spring.ai.openai.api-key=xxx
+spring.datasource.url=jdbc:mysql://localhost:3306/ai_job?...
+spring.datasource.username=xxx
+spring.datasource.password=xxx
+openai.pool.config.list=[...]
+```
 
-## 功能介绍
+如果只是本地自用，可以先开启：
 
-### AI坐席
-- \- 让AI作为您的求职者分身，帮助您快速找到工作。
-- \- 智能回复HR的消息,结合您的简历信息进行定制化回答。
-- \- 预设问题支持，根据场景只能匹配您的预设问题，进行智能回答。
-- \- AI快捷回复发送简历，交换 wx、联系方式。
-- \- HR拒绝挽留，当hr拒绝您时，可触发拒绝挽留。主动发送简历，并发送自定义的挽留语。
+```properties
+product.permission.skip=true
+```
 
-<br/>
+不要把真实的 `application.properties` 和 `application-dev.properties` 提交到仓库。
 
-### 工作通知
-- \- 支持AI坐席与HR的每轮沟通，发送邮件通知。
-- \- 高意向职位邮件通知，通过设置的关键字或者对话轮数，发送高意向职位的通知。
+### 2. 启动 MySQL
 
-<br/>
+```bash
+make mysql-up
+```
 
-### 投递工具
-- \- 批量投递简历。自定义单次投递数量。
-- \- 发送自定义招呼语，充分展现您的优势。
-- \- 自定义筛选过滤，根据您的需求筛选公司，职位，薪资...。
+如需修改 MySQL 密码、端口或库名，可以通过环境变量覆盖 `docker-compose.yml` 中的默认值：
 
-<br/>
+```bash
+MYSQL_ROOT_PASSWORD=your_password MYSQL_PORT=3306 make mysql-up
+```
 
-### AI坐席使用
-- \- 购买ai坐席之后，可在AI助手中开启全局AI坐席功能。
-- \- 开启全局AI坐席功能后，HR的消息将会自动转发给AI坐席进行智能回复。
-- \- 可随时打断AI坐席的回复，当在web端或app端自己回复HR之后，当前会话的AI坐席将会自动停止。
-- \- 停止后，可在web端的消息列表页面中点击【重启当前会话AI坐席】按钮，重新开启当前会话的AI坐席。
-- \- 也可在web端通过快捷指令【start】输入到聊天框并发送，开启当前会话的AI坐席。boss端并不会收到当前消息。
-- \- 当hr拒绝您时，可触发拒绝挽留。主动发送简历，并发送自定义的挽留语。
-- \- 当hr通过boss向你交换联系方式时，ai助手自动交换。
-- \- 可在偏好设置中设置预设问题，ai坐席根据场景智能匹配您的预设问题，进行智能回答。
+### 3. 启动后端
 
-<br/>
+```bash
+make server-dev
+```
 
+默认后端端口：
 
-### 常见问题
-- \- 在boss更新简历之后，请重新导入简历。
-- \- 脚本未运行，请尝试刷新页面。
+- API 服务：`http://localhost:9100`
+- SmartConfig：`http://localhost:6768`
 
----
+### 4. 启动前端开发
 
+```bash
+make ui-dev
+```
 
-### 更新日志
+前端是用户脚本项目。开发时根据 Vite 输出地址安装开发版脚本，或构建后使用产物。
 
-#### 2025.03.13
-- 新增ai招呼语功能。
-- 产品支持试用。
-- 页面优化。
+### 5. 构建用户脚本
+
+```bash
+make ui-build
+```
+
+构建产物位于：
+
+```text
+ai-job-hunting-ui/dist/ai-job-hunting.user.js
+```
+
+也可以使用根目录已有脚本：
+
+- [ai-job-hunting.user.js](./ai-job-hunting.user.js)：依赖 CDN 的版本。
+- [ai-job-hunting.bundle.user.js](./ai-job-hunting.bundle.user.js)：内置依赖的版本，网络环境不稳定时优先使用。
+
+### 6. 在 Boss 页面使用
+
+安装用户脚本后，进入 Boss 直聘岗位列表页：
+
+```text
+https://www.zhipin.com/web/geek/jobs
+```
+
+在页面面板中配置服务器地址，例如：
+
+```text
+http://localhost:9100
+```
+
+点击连接测试，成功后即可使用导入简历、投递、自动搜索、快速投递和 AI 坐席能力。
+
+## 常用命令
+
+```bash
+make help            # 查看命令
+make mysql-up        # 启动 MySQL
+make mysql-down      # 停止 MySQL
+make server-dev      # dev profile 启动后端
+make server-package  # 打包后端 jar
+make ui-dev          # 启动前端开发服务
+make ui-build        # 构建用户脚本
+make docker-up       # 打包后端并启动 MySQL + 后端
+make docker-down     # 停止 Docker 服务
+make docker-logs     # 查看后端容器日志
+make docker-clean    # 停止服务并删除 Docker volume
+```
+
+## 前端自动搜索配置
+
+自动搜索和快速投递依赖两个前端配置文件：
+
+```text
+ai-job-hunting-ui/src/config/autoSearchKeywords.ts
+ai-job-hunting-ui/src/config/autoSearchConfig.ts
+```
+
+如果本地缺少配置文件，可以从示例文件复制：
+
+```powershell
+Copy-Item ai-job-hunting-ui/src/config/autoSearchKeywords.ts.example ai-job-hunting-ui/src/config/autoSearchKeywords.ts
+Copy-Item ai-job-hunting-ui/src/config/autoSearchConfig.ts.example ai-job-hunting-ui/src/config/autoSearchConfig.ts
+```
+
+### `autoSearchKeywords.ts`
+
+该文件维护自动搜索关键词列表：
+
+```ts
+export const AUTO_SEARCH_KEYWORDS: string[] = [
+    "Go 后端开发工程师",
+    "Golang 后端开发工程师",
+    "Go后端",
+];
+```
+
+说明：
+
+- 自动搜索和快速投递会按数组顺序从上到下执行。
+- 越重要、越精准的关键词应该排在越前面。
+- 每一项只放岗位关键词，不要放完整 URL。
+- 关键词会在搜索 URL 中写入 `query` 参数。
+
+### `autoSearchConfig.ts`
+
+该文件维护搜索页地址和默认筛选参数：
+
+```ts
+export const AUTO_SEARCH_CONFIG: AutoSearchConfig = {
+    baseUrl: "https://www.zhipin.com/web/geek/jobs",
+    defaultParams: {
+        city: "101280600",
+        experience: "101",
+    },
+    reuseCurrentSearchParams: true,
+};
+```
+
+字段说明：
+
+- `baseUrl`：Boss 岗位搜索页地址。
+- `defaultParams`：默认 URL 查询参数，会拼到搜索地址上；常见参数包括 `city`、`experience` 等。
+- `reuseCurrentSearchParams`：是否复用当前 Boss 搜索页已有筛选条件。
+
+运行规则：
+
+- `query` 不需要写在 `defaultParams`，程序会自动用当前关键词覆盖。
+- 当 `reuseCurrentSearchParams = true` 且当前页面已经是 Boss 搜索页时，会保留当前页面筛选条件，只替换 `query`。
+- `defaultParams` 只会补齐当前 URL 缺少的参数，不会覆盖你已经在页面上筛选好的参数。
+- 当 `reuseCurrentSearchParams = false` 时，每次搜索都从 `baseUrl + defaultParams + query` 生成新地址。
+
+使用建议：先在 Boss 页面手动筛选城市、薪资、经验、学历等条件，再点击自动搜索或快速投递；如果希望每次都使用固定筛选条件，把 `reuseCurrentSearchParams` 改为 `false`，并在 `defaultParams` 中维护固定参数。
+
+## 配置与安全
+
+必须忽略的本地配置：
+
+```text
+ai-job-hunting-server/src/main/resources/application.properties
+ai-job-hunting-server/src/main/resources/application-dev.properties
+```
+
+这些文件已加入 [ai-job-hunting-server/.gitignore](./ai-job-hunting-server/.gitignore)。
+
+安全要求：
+
+- 不要提交 API Key、数据库密码、支付宝私钥、真实回调地址。
+- 如果密钥曾经进入 Git 历史，需要立即轮换密钥。
+- example 文件只放占位符，不放个人真实部署信息。
+- 生产部署建议通过环境变量或容器 Secret 注入敏感配置。
+
+## 截图
+
+服务器配置：
+
+![server](./file/server.png)
+
+AI 坐席：
+
+![ai-seat](./file/ai_seat.png)
+
+首页面板：
+
+![home](./file/home.png)
+
+AI 配置：
+
+![ai-config](./file/ai_config.png)
+
+## 关键文件
+
+- [ai-job-hunting-ui/src/components/ui/AiJob.vue](./ai-job-hunting-ui/src/components/ui/AiJob.vue)：投递、自动搜索、快速投递主面板。
+- [ai-job-hunting-ui/src/platform/platform.ts](./ai-job-hunting-ui/src/platform/platform.ts)：投递流程抽象。
+- [ai-job-hunting-ui/src/platform/bossPlatform.ts](./ai-job-hunting-ui/src/platform/bossPlatform.ts)：Boss 平台适配逻辑。
+- [ai-job-hunting-ui/src/webSocket/hookMain.ts](./ai-job-hunting-ui/src/webSocket/hookMain.ts)：WebSocket Hook 和消息拦截。
+- [ai-job-hunting-server/src/main/java/com/maple/ai/job/hunting/service/ai](./ai-job-hunting-server/src/main/java/com/maple/ai/job/hunting/service/ai)：AI 服务抽象与实现。
+- [ai-job-hunting-server/src/main/resources/schema.sql](./ai-job-hunting-server/src/main/resources/schema.sql)：数据库表结构。
+
+## 常见问题
+
+### 页面没有出现功能面板
+
+确认当前页面是 Boss 岗位列表页，不是首页：
+
+```text
+https://www.zhipin.com/web/geek/jobs
+```
+
+如果仍未显示，刷新页面，或切换到 bundle 版本用户脚本。
+
+### AI 功能不可用
+
+检查：
+
+- 后端服务是否启动。
+- 页面服务器地址是否配置正确。
+- `spring.ai.kimi.api-key`、`spring.ai.openai.api-key` 或 `openai.pool.config.list` 是否有效。
+- 浏览器控制台和后端日志是否有跨域、鉴权或模型调用错误。
+
+### 投递前需要做什么
+
+建议先完成：
+
+- 在 Boss 页面筛选岗位条件。
+- 在偏好设置中配置岗位偏好和过滤规则。
+- 导入最新简历。
+- 设置单次投递数量，先小批量验证。
+
+## 免责声明
+
+本项目仅用于学习、研究和个人效率工具实践。使用时应遵守招聘平台规则和相关法律法规。自动化投递、消息回复、支付运营等行为产生的风险由使用者自行承担。
