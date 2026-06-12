@@ -184,6 +184,29 @@ ai-job-hunting-ui/src/config/autoSearchKeywords.ts
 ai-job-hunting-ui/src/config/autoSearchConfig.ts
 ```
 
+tips: 
+
+`autoSearchKeywords` 配置中的岗位关键词可以通过 AI 获取；
+
+`autoSearchConfig` 基于 boss 直聘官方 url 参数进行配置，如
+
+```text
+url：https://www.zhipin.com/web/geek/jobs?city=100010000
+
+// 筛选条件-全国城市
+defaultParams: {
+        city: "100010000",
+    }
+
+url：https://www.zhipin.com/web/geek/jobs?city=100010000&experience=101
+
+// 筛选条件-全国城市、经验不限
+defaultParams: {
+        city: "100010000",
+        experience:"101",
+    }
+```
+
 如果本地缺少配置文件，可以从示例文件复制：
 
 ```powershell
@@ -260,17 +283,9 @@ ai-job-hunting-server/src/main/resources/application-dev.properties
 
 ## 截图
 
-服务器配置：
-
-![server](./file/server.png)
-
-AI 坐席：
-
-![ai-seat](./file/ai_seat.png)
-
 首页面板：
 
-![home](./file/home.png)
+![home](./file/main.png)
 
 AI 配置：
 
