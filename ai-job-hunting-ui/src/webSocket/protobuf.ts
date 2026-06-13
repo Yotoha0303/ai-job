@@ -115,34 +115,36 @@ export class Message {
         return this.msg.buffer.slice(0, this.msg.byteLength);
     }
 
-    send() {
+    send(): boolean {
         if (Tools.window.ChatWebsocket) {
             try {
                 Tools.window.ChatWebsocket.send(this);
+                return true;
             } catch (e) {
                 logRecorder.error("发送自定义消息失败", e);
             }
-            return;
         }
-        if (this.msgObj.body.type === 3) {
+
+        if (this.msgObj.body.type === 3 && Tools.window.ChatWebsocketImage) {
             try {
                 Tools.window.ChatWebsocketImage.send(this);
+                return true;
             } catch (e) {
                 logRecorder.error("发送图片消息失败", e);
             }
-            return;
         }
 
         if (Tools.window.GeekChatCore) {
             try {
                 Tools.window.GeekChatCore.getInstance().getClient().client.send(this);
+                return true;
             } catch (e) {
                 logRecorder.warn("发送自定义消息失败; boss可能更新了1，请反馈", e)
             }
-            return;
         }
 
         logRecorder.warn("发送自定义消息失败; boss可能更新了，请反馈")
+        return false;
     }
 }
 

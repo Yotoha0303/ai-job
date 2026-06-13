@@ -1,6 +1,9 @@
 <template>
     <br/>
     <el-button style="margin-left: 10px;" type="success" @click="handlerClick">重启当前会话AI坐席</el-button>
+    <el-button style="margin-left: 10px;" type="primary" @click="handlerResendPushAfterActions">
+        补发当前会话后续动作
+    </el-button>
     
     <!-- 批量发送悬浮框（自定义非遮罩，不阻塞背景点击） -->
     <div v-if="batchSendDialogVisible" class="batch-send-float">
@@ -24,6 +27,9 @@ import {BossOption} from "../../platform/bossPlatform";
 import {ref} from "vue";
 import {Message} from "../../webSocket/protobuf";
 import {Tools} from "../../platform/utils";
+import {UserStore} from "../../stores";
+
+const userStore = UserStore();
 
 // 批量发送相关状态
 const batchSendDialogVisible = ref(false)
@@ -190,6 +196,94 @@ const handlerClick = () => {
             message: '已重新触发AI坐席'
         })
     })
+}
+
+const getSelectedBossSource = (): any => {
+    const element = document.querySelector('.friend-content.selected') as any;
+    return element?.parentElement?.__vue__?.source || element?.__vue__?._props?.source || element?.__vue__?.source;
+}
+
+const sendWithRetry = async (message: Message, actionName: string, retries = 3): Promise<void> => {
+    for (let currentRetry = 1; currentRetry <= retries; currentRetry++) {
+        if (message.send()) {
+            return;
+        }
+        if (currentRetry < retries) {
+            await Tools.sleep(1000);
+        }
+    }
+
+    throw new Error(`${actionName}失败，websocket不可用或发送异常`);
+}
+
+const handlerResendPushAfterActions = async () => {
+    const bossSource = getSelectedBossSource();
+    if (!bossSource?.uid || !bossSource?.encryptBossId) {
+        ElMessage({
+            type: 'info',
+            message: '请先进入聊天窗口'
+        })
+        return;
+    }
+
+    let successCount = 0;
+    const skippedActions: string[] = [];
+
+    try {
+        if (userStore.user.preference.cIE) {
+            const customerImageSet = userStore.user.preference.cI;
+            const [originImage, tinyImage] = customerImageSet ? customerImageSet.split("===") : [];
+            if (originImage && tinyImage) {
+                await sendWithRetry(new Message({
+                    form_uid: Tools.window._PAGE.uid.toString(),
+                    to_uid: bossSource.uid.toString(),
+                    to_name: bossSource.encryptBossId,
+                    content: "",
+                    image: {
+                        originImage,
+                        tinyImage,
+                    },
+                }), "补发自定义图片")
+                successCount++;
+            } else {
+                skippedActions.push("自定义图片配置为空或格式异常");
+            }
+        } else {
+            skippedActions.push("未开启自定义图片");
+        }
+
+        if (userStore.user.preference.cgE) {
+            const customGreeting = userStore.user.preference.cg;
+            if (customGreeting) {
+                await sendWithRetry(new Message({
+                    form_uid: Tools.window._PAGE.uid.toString(),
+                    to_uid: bossSource.uid.toString(),
+                    to_name: bossSource.encryptBossId,
+                    content: customGreeting,
+                    image: undefined,
+                }), "补发自定义招呼语")
+                successCount++;
+            } else {
+                skippedActions.push("自定义招呼语为空");
+            }
+        } else {
+            skippedActions.push("未开启自定义招呼语");
+        }
+
+        ElMessage({
+            type: successCount > 0 ? 'success' : 'warning',
+            message: successCount > 0
+                ? `已补发 ${successCount} 个后续动作${skippedActions.length ? `；跳过：${skippedActions.join('、')}` : ''}`
+                : `没有可补发的后续动作：${skippedActions.join('、')}`,
+            duration: 3000
+        })
+    } catch (error: any) {
+        ElMessage({
+            type: 'error',
+            message: `补发后续动作失败：${error?.message || error}`,
+            duration: 3000
+        })
+    }
 }
 
 </script>

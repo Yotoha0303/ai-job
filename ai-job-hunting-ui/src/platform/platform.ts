@@ -1060,12 +1060,14 @@ class BossPlatform extends AbsPlatform {
             try {
                 // 投递后发送自定义图片
                 await this.pushAfterSendImage(jobDetail);
-            } catch (e) {
+            } catch (e: any) {
+                this.logRecorder.warn(`工作【${jobTitle}】发送自定义图片失败 原因：${this.getErrorMessage(e)}`)
             }
             try {
                 // 投递后发送自定义消息
                 await this.pushAfterSendMsg(jobDetail);
-            } catch (e) {
+            } catch (e: any) {
+                this.logRecorder.warn(`工作【${jobTitle}】发送自定义招呼语失败 原因：${this.getErrorMessage(e)}`)
             }
 
             // 标记为已沟通，在推荐页面中下一页会获取之前的数据，所以需要标记为已沟通
@@ -1083,12 +1085,25 @@ class BossPlatform extends AbsPlatform {
      * 投递后发送自定义消息
      */
     async pushAfterSendMsg(jobDetail: BossJobDetail) {
-        if (!userStore.user.preference.cgE || this._pushMock) {
+        const jobTitle = this.getJobKey(jobDetail);
+
+        if (!userStore.user.preference.cgE) {
+            this.logRecorder.info(`工作【${jobTitle}】未开启自定义招呼语，跳过发送`)
             return;
         }
-        let bossData = await this.requestBossDataByCache(jobDetail);
+        if (this._pushMock) {
+            this.logRecorder.info(`工作【${jobTitle}】当前为模拟投递，跳过发送自定义招呼语`)
+            return;
+        }
 
         let customGreeting = userStore.user.preference.cg;
+        if (!customGreeting) {
+            this.logRecorder.info(`工作【${jobTitle}】自定义招呼语为空，跳过发送`)
+            return;
+        }
+
+        let bossData = await this.requestBossDataByCache(jobDetail);
+
         // 发送websocket消息
         let message = new Message({
             form_uid: Tools.window._PAGE.uid.toString(),
@@ -1097,32 +1112,77 @@ class BossPlatform extends AbsPlatform {
             content: customGreeting,
             image: undefined,
         });
-        message.send()
+        await this.sendMessageWithRetry(message, jobTitle, "发送自定义招呼语")
     }
 
     /**
      * 投递后发送自定义图片
      */
     async pushAfterSendImage(jobDetail: BossJobDetail) {
-        if (!userStore.user.preference.cIE || this._pushMock) {
+        const jobTitle = this.getJobKey(jobDetail);
+
+        if (!userStore.user.preference.cIE) {
+            this.logRecorder.info(`工作【${jobTitle}】未开启自定义图片，跳过发送`)
             return;
         }
+        if (this._pushMock) {
+            this.logRecorder.info(`工作【${jobTitle}】当前为模拟投递，跳过发送自定义图片`)
+            return;
+        }
+
         let bossData = await this.requestBossDataByCache(jobDetail);
         let customerImageSet = userStore.user.preference.cI;
         if (!customerImageSet) {
+            this.logRecorder.info(`工作【${jobTitle}】自定义图片配置为空，跳过发送`)
             return;
         }
+        const [originImage, tinyImage] = customerImageSet.split("===");
+        if (!originImage || !tinyImage) {
+            this.logRecorder.warn(`工作【${jobTitle}】自定义图片配置异常，跳过发送`)
+            return;
+        }
+
         let message = new Message({
             form_uid: Tools.window._PAGE.uid.toString(),
             to_uid: bossData.data.bossId.toString(),
             to_name: jobDetail.encryptBossId,
             content: "",
             image: {
-                originImage: customerImageSet.split("===")[0],
-                tinyImage: customerImageSet.split("===")[1],
+                originImage,
+                tinyImage,
             },
         });
-        message.send()
+        await this.sendMessageWithRetry(message, jobTitle, "发送自定义图片")
+    }
+
+    private async sendMessageWithRetry(message: Message, jobTitle: string, actionName: string, retries = 3): Promise<void> {
+        for (let currentRetry = 1; currentRetry <= retries; currentRetry++) {
+            if (message.send()) {
+                this.logRecorder.info(`工作【${jobTitle}】${actionName}成功`)
+                return;
+            }
+
+            if (currentRetry < retries) {
+                this.logRecorder.warn(`工作【${jobTitle}】${actionName}失败，第 ${currentRetry}/${retries} 次，1秒后重试`)
+                await Tools.sleep(1000);
+            }
+        }
+
+        throw new Error(`${actionName}失败，websocket不可用或发送异常`)
+    }
+
+    private getErrorMessage(error: any): string {
+        if (error instanceof Error) {
+            return error.message;
+        }
+        if (typeof error === "string") {
+            return error;
+        }
+        try {
+            return JSON.stringify(error);
+        } catch (_) {
+            return String(error);
+        }
     }
 
     pushPreHandler(jobDetail: JobDetail): JobDetail {
