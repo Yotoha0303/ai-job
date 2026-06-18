@@ -49,6 +49,19 @@ const root = protobuf.parse(protoDefinition).root;
 // 获取你需要的 Message 类型
 export const protobufType = root.lookupType("TechwolfChatProtocol");
 
+function trySendByChannel(channel: any, message: any, channelName: string): boolean {
+    if (!channel?.send) {
+        return false;
+    }
+    try {
+        channel.send(message);
+        return true;
+    } catch (e) {
+        logRecorder.error(`${channelName}发送消息失败`, e);
+        return false;
+    }
+}
+
 export class Message {
     msg: Uint8Array;
     msgObj: any;
@@ -116,28 +129,20 @@ export class Message {
     }
 
     send(): boolean {
-        if (Tools.window.ChatWebsocket) {
-            try {
-                Tools.window.ChatWebsocket.send(this);
-                return true;
-            } catch (e) {
-                logRecorder.error("发送自定义消息失败", e);
-            }
+        if (trySendByChannel(Tools.window.ChatWebsocket, this, "ChatWebsocket")) {
+            return true;
         }
 
-        if (this.msgObj.body.type === 3 && Tools.window.ChatWebsocketImage) {
-            try {
-                Tools.window.ChatWebsocketImage.send(this);
-                return true;
-            } catch (e) {
-                logRecorder.error("发送图片消息失败", e);
-            }
+        if (trySendByChannel(Tools.window.ChatWebsocketImage, this, "ChatWebsocketImage")) {
+            return true;
         }
 
         if (Tools.window.GeekChatCore) {
             try {
-                Tools.window.GeekChatCore.getInstance().getClient().client.send(this);
-                return true;
+                const geekChatClient = Tools.window.GeekChatCore.getInstance()?.getClient()?.client;
+                if (trySendByChannel(geekChatClient, this, "GeekChatCore")) {
+                    return true;
+                }
             } catch (e) {
                 logRecorder.warn("发送自定义消息失败; boss可能更新了1，请反馈", e)
             }

@@ -14,7 +14,9 @@ AI Job Hunting 是一个面向 Boss 直聘的求职自动化项目。项目通�
 - 个人简历补发 New!：按已经成功筛选出来的岗位，补发期间单个或多个岗位未成功沟通的简历信息。
 - 自动搜索 New!：按关键词库依次搜索岗位，每个关键词停留一段时间后切换下一条。
 - 快速投递 New!：按关键词搜索岗位，当前关键词投递完成后立即搜索下一条。
-- 搜索参数复用 New!：自动搜索和快速投递会保留当前 Boss 搜索页的筛选条件，只替换关键词。
+- 模糊快投 New!：输入种子岗位关键词后自动扩展相似岗位关键词，可设置本轮最多投递数、沿用 Boss 筛选和 AI 匹配过滤。
+- 搜索参数复用 New!：自动搜索、快速投递和模糊快投会保留当前 Boss 搜索页的筛选条件，只替换关键词。
+- 投递后置发送队列 New!：投递成功后自定义招呼语和图片简历会进入待发送队列，聊天通道就绪后自动补发，不阻塞后续投递。
 - 关键词库 New!：前端维护固定关键词列表，适合按岗位方向批量搜索。
 - AI 坐席：结合简历信息辅助回复 HR 消息，支持预设问题、拒绝挽留、交换联系方式等场景。
 - 简历导入：从 Boss 侧导入简历信息，供 AI 回复和偏好配置使用。
@@ -158,7 +160,7 @@ https://www.zhipin.com/web/geek/jobs
 http://localhost:9100
 ```
 
-点击连接测试，成功后即可使用导入简历、投递、自动搜索、快速投递和 AI 坐席能力。
+点击连接测试，成功后即可使用导入简历、投递、自动搜索、快速投递、模糊快投和 AI 坐席能力。
 
 ## 常用命令
 
@@ -178,7 +180,7 @@ make docker-clean    # 停止服务并删除 Docker volume
 
 ## 前端自动搜索配置
 
-自动搜索和快速投递依赖两个前端配置文件：
+自动搜索、快速投递和模糊快投依赖两个前端配置文件：
 
 ```text
 ai-job-hunting-ui/src/config/autoSearchKeywords.ts
@@ -229,7 +231,7 @@ export const AUTO_SEARCH_KEYWORDS: string[] = [
 
 说明：
 
-- 自动搜索和快速投递会按数组顺序从上到下执行。
+- 自动搜索和快速投递会按数组顺序从上到下执行；模糊快投会基于页面输入的种子岗位关键词临时生成关键词队列。
 - 越重要、越精准的关键词应该排在越前面。
 - 每一项只放岗位关键词，不要放完整 URL。
 - 关键词会在搜索 URL 中写入 `query` 参数。
@@ -262,7 +264,37 @@ export const AUTO_SEARCH_CONFIG: AutoSearchConfig = {
 - `defaultParams` 只会补齐当前 URL 缺少的参数，不会覆盖你已经在页面上筛选好的参数。
 - 当 `reuseCurrentSearchParams = false` 时，每次搜索都从 `baseUrl + defaultParams + query` 生成新地址。
 
-使用建议：先在 Boss 页面手动筛选城市、薪资、经验、学历等条件，再点击自动搜索或快速投递；如果希望每次都使用固定筛选条件，把 `reuseCurrentSearchParams` 改为 `false`，并在 `defaultParams` 中维护固定参数。
+使用建议：先在 Boss 页面手动筛选城市、薪资、经验、学历等条件，再点击自动搜索、快速投递或模糊快投；如果希望每次都使用固定筛选条件，把 `reuseCurrentSearchParams` 改为 `false`，并在 `defaultParams` 中维护固定参数。
+
+### 模糊快投
+
+模糊快投适合在已经配置好岗位偏好和过滤规则后，快速扩大候选岗位来源并尽快用完设定的投递数量。页面上的模糊快投区域包含以下控件：
+
+- `种子岗位关键词`：用于扩展相似岗位关键词的起点，例如 `Java后端`、`Go后端`、`前端`、`测试`。
+- `本轮最多投递`：本次模糊快投最多成功投递的岗位数量。
+- `沿用BOSS筛选`：保留当前 Boss 搜索页的城市、薪资、经验、学历等筛选条件，只替换搜索关键词。
+- `AI匹配过滤`：复用偏好设置中的 AI 语义匹配过滤，不单独维护第二套 AI 过滤状态。
+- `开始模糊快投`：按扩展后的关键词队列开始搜索和投递；运行中按钮会变为 `停止模糊快投`。
+
+运行规则：
+
+- 输入一个种子岗位关键词，例如 `Java后端`、`Go后端`、`前端`、`测试`。
+- 前端会基于内置映射和通用规则扩展相似关键词，例如 `Java后端` 会扩展为 `Java开发`、`后端开发`、`Spring Boot`、`微服务开发` 等。
+- 每个扩展关键词都会复用现有搜索跳转逻辑，并继续执行现有 `matchJob -> push -> pushAfterHandler` 投递链路。
+- 是否复用当前 Boss 筛选条件由页面上的 `沿用BOSS筛选` 开关控制。
+- `AI匹配过滤` 开关复用偏好设置中的 AI 过滤能力，不单独维护第二套过滤状态。
+- 达到模糊快投设置的最大投递数量、Boss 当日上限、关键词队列执行完、连续过滤阈值或用户手动停止时会结束。
+- 运行状态和岗位处理状态会写入浏览器本地存储，自动刷新或手动刷新后会尽量继续当前任务并跳过已处理岗位。
+
+### 投递后置发送队列
+
+自定义招呼语和图片简历依赖 Boss 聊天 WebSocket。岗位列表页刚完成投递时，聊天通道可能尚未就绪。为避免后置发送阻塞批量投递，当前流程会将这些动作写入本地待发送队列：
+
+- 投递成功会先计为成功，不会因为招呼语或图片简历暂时发送失败而回滚。
+- 如果聊天通道已就绪，会立即补发待发送动作。
+- 如果聊天通道未就绪，会保留为 `pending`，页面刷新或通道初始化成功后继续补发。
+- 同一岗位同一种动作会去重，避免重复发送。
+- 超过重试上限后会标记为 `failed`，日志中会显示补发失败原因。
 
 ## 配置与安全
 
@@ -294,8 +326,8 @@ AI 配置：
 
 ## 关键文件
 
-- [ai-job-hunting-ui/src/components/ui/AiJob.vue](./ai-job-hunting-ui/src/components/ui/AiJob.vue)：投递、自动搜索、快速投递主面板。
-- [ai-job-hunting-ui/src/platform/platform.ts](./ai-job-hunting-ui/src/platform/platform.ts)：投递流程抽象。
+- [ai-job-hunting-ui/src/components/ui/AiJob.vue](./ai-job-hunting-ui/src/components/ui/AiJob.vue)：投递、自动搜索、快速投递、模糊快投主面板。
+- [ai-job-hunting-ui/src/platform/platform.ts](./ai-job-hunting-ui/src/platform/platform.ts)：投递流程抽象、岗位处理进度和投递后置发送队列。
 - [ai-job-hunting-ui/src/platform/bossPlatform.ts](./ai-job-hunting-ui/src/platform/bossPlatform.ts)：Boss 平台适配逻辑。
 - [ai-job-hunting-ui/src/webSocket/hookMain.ts](./ai-job-hunting-ui/src/webSocket/hookMain.ts)：WebSocket Hook 和消息拦截。
 - [ai-job-hunting-server/src/main/java/com/maple/ai/job/hunting/service/ai](./ai-job-hunting-server/src/main/java/com/maple/ai/job/hunting/service/ai)：AI 服务抽象与实现。

@@ -20,6 +20,56 @@ let pushResultCounter: any;
 let userStore: any;
 
 const MAX_CONSECUTIVE_NOT_MATCH_COUNT = 30;
+const JOB_PROGRESS_STORAGE_PREFIX = 'ai-job:push:job-progress:v1:';
+const JOB_PROGRESS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const POST_PUSH_QUEUE_STORAGE_PREFIX = 'ai-job:post-push-queue:v1:';
+const POST_PUSH_QUEUE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const POST_PUSH_QUEUE_PROCESSING_TIMEOUT_MS = 2 * 60 * 1000;
+const POST_PUSH_QUEUE_WORKER_INTERVAL_MS = 5000;
+const POST_PUSH_QUEUE_MAX_RETRY = 5;
+
+type JobProgressStatus = 'processing' | 'skipped' | 'success' | 'failed';
+
+interface JobProgressRecord {
+    status: JobProgressStatus;
+    updatedAt: number;
+    reason?: string;
+}
+
+type JobProgressMap = Record<string, JobProgressRecord>;
+
+type PostPushActionType = 'greeting' | 'image';
+type PostPushActionStatus = 'pending' | 'processing' | 'success' | 'failed';
+
+interface PostPushActionPayload {
+    greeting?: string;
+    image?: {
+        originImage: string;
+        tinyImage: string;
+    };
+}
+
+interface PostPushJobSnapshot {
+    jobKey: string;
+    jobTitle: string;
+    encryptBossId: string;
+    securityId: string;
+    bossId?: string;
+}
+
+interface PostPushQueueItem {
+    id: string;
+    action: PostPushActionType;
+    status: PostPushActionStatus;
+    retryCount: number;
+    createdAt: number;
+    updatedAt: number;
+    lastError?: string;
+    job: PostPushJobSnapshot;
+    payload: PostPushActionPayload;
+}
+
+type PostPushQueueMap = Record<string, PostPushQueueItem>;
 
 
 export enum PlatformTypeEnum {
@@ -84,6 +134,74 @@ export abstract class AbsPlatform implements Platform {
 
     abstract getRenderComponent(): Promise<any>;
 
+    private getJobProgressStorageKey(): string {
+        return JOB_PROGRESS_STORAGE_PREFIX + this.getJobProgressScopeKey();
+    }
+
+    private getJobProgressScopeKey(): string {
+        return `${this.getPlatformType()}:${window.location.origin}${window.location.pathname}${window.location.search}`;
+    }
+
+    private readJobProgress(): JobProgressMap {
+        const rawProgress = localStorage.getItem(this.getJobProgressStorageKey());
+        if (!rawProgress) {
+            return {};
+        }
+        try {
+            const progress = JSON.parse(rawProgress) as JobProgressMap;
+            if (!progress || typeof progress !== 'object' || Array.isArray(progress)) {
+                localStorage.removeItem(this.getJobProgressStorageKey());
+                return {};
+            }
+            const now = Date.now();
+            Object.entries(progress).forEach(([key, record]) => {
+                if (!record?.updatedAt || now - record.updatedAt > JOB_PROGRESS_MAX_AGE_MS) {
+                    delete progress[key];
+                }
+            });
+            return progress;
+        } catch (error) {
+            logger.warn("读取投递进度失败", error);
+            localStorage.removeItem(this.getJobProgressStorageKey());
+            return {};
+        }
+    }
+
+    private writeJobProgress(progress: JobProgressMap): void {
+        localStorage.setItem(this.getJobProgressStorageKey(), JSON.stringify(progress));
+    }
+
+    protected getPersistentJobKey(jobDetail: JobDetail): string {
+        return this.getJobKey(jobDetail);
+    }
+
+    protected markJobProgress(jobDetail: JobDetail, status: JobProgressStatus, reason = ''): void {
+        const jobKey = this.getPersistentJobKey(jobDetail);
+        if (!jobKey) {
+            return;
+        }
+        const progress = this.readJobProgress();
+        progress[jobKey] = {
+            status,
+            updatedAt: Date.now(),
+            reason,
+        };
+        this.writeJobProgress(progress);
+    }
+
+    protected shouldSkipPersistedJob(jobDetail: JobDetail): boolean {
+        const jobKey = this.getPersistentJobKey(jobDetail);
+        if (!jobKey) {
+            return false;
+        }
+        const record = this.readJobProgress()[jobKey];
+        return !!record && record.status !== 'processing';
+    }
+
+    protected filterPendingJobs<T extends JobDetail>(jobList: T[]): T[] {
+        return jobList.filter(job => !(job as any).processed && !this.shouldSkipPersistedJob(job));
+    }
+
     async startPush() {
         this.logRecorder.info("开始投递")
         // 每次投递前清空单次成功计数器
@@ -105,14 +223,17 @@ export abstract class AbsPlatform implements Platform {
                 let shouldScrollAfterJob = true;
                 try {
                     this.preMatchJob();
+                    this.markJobProgress(jobDetail, 'processing');
                     await this.matchJob(jobDetail);
                     consecutiveNotMatchCount = 0;
                     this.pushPreHandler(jobDetail);
                     const pushResult = await this.push(jobDetail);
                     await this.pushAfterHandler(pushResult, jobDetail);
+                    this.markJobProgress(jobDetail, 'success');
                 } catch (error) {
                     switch (true) {
                         case error instanceof NotMatchException:
+                            this.markJobProgress(jobDetail, 'skipped', error.message);
                             consecutiveNotMatchCount++;
                             if (this.logRecorder.getLogLevel() === LogLevel.Debug) {
                                 this.logRecorder.info(`工作【${error.jobTitle}】被过滤 原因：${error.message} 当前值:${error.data}`)
@@ -128,12 +249,14 @@ export abstract class AbsPlatform implements Platform {
                             break;
 
                         case error instanceof PushReqException:
+                            this.markJobProgress(jobDetail, 'failed', error.message);
                             consecutiveNotMatchCount = 0;
                             this.logRecorder.warn(`工作【${error.jobTitle}】投递失败 原因：${error.message}`)
                             pushResultCounter.failIncr()
                             break
 
                         case error instanceof FetchJobBossFailExp:
+                            this.markJobProgress(jobDetail, 'failed', error.message);
                             consecutiveNotMatchCount = 0;
                             this.logRecorder.warn(`工作【${error.jobTitle}】发送自定义招呼语失败 原因：${error.message}`)
                             break
@@ -343,11 +466,153 @@ class BossPlatform extends AbsPlatform {
     lastHeight = 0;
     private lastJobHandledScrollTime = 0;
     private readonly jobHandledScrollInterval = 800;
+    private postPushQueueWorkerTimer: number | null = null;
+    private postPushQueueProcessing = false;
 
 
     constructor(curUrl: string) {
         super();
         this.curUrl = curUrl;
+        window.setTimeout(() => this.startPostPushQueueWorker(), 0);
+    }
+
+    protected getPersistentJobKey(jobDetail: BossJobDetail): string {
+        const keyParts = [
+            jobDetail.encryptJobId,
+            jobDetail.securityId,
+            jobDetail.lid,
+            jobDetail.encryptBossId,
+        ].filter(item => item !== undefined && item !== null && item !== '');
+        return keyParts.length > 0 ? keyParts.join(':') : super.getPersistentJobKey(jobDetail);
+    }
+
+    private getPostPushQueueStorageKey(): string {
+        const userId = Tools.window?._PAGE?.uid || 'unknown';
+        return `${POST_PUSH_QUEUE_STORAGE_PREFIX}${this.getPlatformType()}:${window.location.origin}:${userId}`;
+    }
+
+    private readPostPushQueue(): PostPushQueueMap {
+        const rawQueue = localStorage.getItem(this.getPostPushQueueStorageKey());
+        if (!rawQueue) {
+            return {};
+        }
+        try {
+            const queue = JSON.parse(rawQueue) as PostPushQueueMap;
+            if (!queue || typeof queue !== 'object' || Array.isArray(queue)) {
+                localStorage.removeItem(this.getPostPushQueueStorageKey());
+                return {};
+            }
+            const now = Date.now();
+            Object.entries(queue).forEach(([id, item]) => {
+                if (!item?.updatedAt || now - item.updatedAt > POST_PUSH_QUEUE_MAX_AGE_MS) {
+                    delete queue[id];
+                    return;
+                }
+                if (item.status === 'processing' && now - item.updatedAt > POST_PUSH_QUEUE_PROCESSING_TIMEOUT_MS) {
+                    item.status = 'pending';
+                    item.updatedAt = now;
+                }
+            });
+            return queue;
+        } catch (error) {
+            logger.warn("读取投递后置发送队列失败", error);
+            localStorage.removeItem(this.getPostPushQueueStorageKey());
+            return {};
+        }
+    }
+
+    private writePostPushQueue(queue: PostPushQueueMap): void {
+        localStorage.setItem(this.getPostPushQueueStorageKey(), JSON.stringify(queue));
+    }
+
+    private getPostPushActionName(action: PostPushActionType): string {
+        return action === 'image' ? '自定义图片' : '自定义招呼语';
+    }
+
+    private getPostPushActionId(jobKey: string, action: PostPushActionType): string {
+        return `${jobKey}:${action}`;
+    }
+
+    private buildPostPushJobSnapshot(jobDetail: BossJobDetail): PostPushJobSnapshot {
+        return {
+            jobKey: this.getPersistentJobKey(jobDetail),
+            jobTitle: this.getJobKey(jobDetail),
+            encryptBossId: jobDetail.encryptBossId,
+            securityId: jobDetail.securityId,
+        };
+    }
+
+    private enqueuePostPushAction(jobDetail: BossJobDetail, action: PostPushActionType, payload: PostPushActionPayload): void {
+        const job = this.buildPostPushJobSnapshot(jobDetail);
+        if (!job.jobKey || !job.encryptBossId || !job.securityId) {
+            this.logRecorder.warn(`工作【${job.jobTitle}】${this.getPostPushActionName(action)}入队失败，缺少Boss标识`)
+            return;
+        }
+
+        const id = this.getPostPushActionId(job.jobKey, action);
+        const queue = this.readPostPushQueue();
+        const existing = queue[id];
+        if (existing && ['pending', 'processing', 'success'].includes(existing.status)) {
+            this.logRecorder.info(`工作【${job.jobTitle}】${this.getPostPushActionName(action)}已在待发送队列中，跳过重复入队`)
+            return;
+        }
+
+        const now = Date.now();
+        queue[id] = {
+            id,
+            action,
+            status: 'pending',
+            retryCount: existing?.status === 'failed' ? 0 : existing?.retryCount ?? 0,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+            job,
+            payload,
+        };
+        this.writePostPushQueue(queue);
+        this.logRecorder.info(`工作【${job.jobTitle}】${this.getPostPushActionName(action)}已加入待发送队列`)
+        this.processPostPushQueue().then();
+    }
+
+    private enqueuePostPushActions(jobDetail: BossJobDetail): void {
+        const jobTitle = this.getJobKey(jobDetail);
+        if (this._pushMock) {
+            this.logRecorder.info(`工作【${jobTitle}】当前为模拟投递，跳过投递后置发送`)
+            return;
+        }
+
+        if (userStore.user.preference.cIE) {
+            const customerImageSet = userStore.user.preference.cI;
+            if (!customerImageSet) {
+                this.logRecorder.info(`工作【${jobTitle}】自定义图片配置为空，跳过发送`)
+            } else {
+                const [originImage, tinyImage] = customerImageSet.split("===");
+                if (!originImage || !tinyImage) {
+                    this.logRecorder.warn(`工作【${jobTitle}】自定义图片配置异常，跳过发送`)
+                } else {
+                    this.enqueuePostPushAction(jobDetail, 'image', {
+                        image: {
+                            originImage,
+                            tinyImage,
+                        },
+                    });
+                }
+            }
+        } else {
+            this.logRecorder.info(`工作【${jobTitle}】未开启自定义图片，跳过发送`)
+        }
+
+        if (userStore.user.preference.cgE) {
+            const customGreeting = userStore.user.preference.cg;
+            if (!customGreeting) {
+                this.logRecorder.info(`工作【${jobTitle}】自定义招呼语为空，跳过发送`)
+            } else {
+                this.enqueuePostPushAction(jobDetail, 'greeting', {
+                    greeting: customGreeting,
+                });
+            }
+        } else {
+            this.logRecorder.info(`工作【${jobTitle}】未开启自定义招呼语，跳过发送`)
+        }
     }
 
     getPlatformType(): PlatformTypeEnum {
@@ -635,7 +900,7 @@ class BossPlatform extends AbsPlatform {
         // boss 推荐职位页面 或者jobs页面
         if (this.curUrl.includes("jobs")) {
             let elementNodeList = document.querySelectorAll<any>(".job-card-wrap");
-            let jobList = Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.processed) as BossJobDetail[];
+            let jobList = this.filterPendingJobs(Array.from(elementNodeList).map(item => item.__vue__.data) as BossJobDetail[]);
             if (elementNodeList.length != 0 && jobList.length == 0) {
                 this.logRecorder.info("当前筛选条件下岗位均已投递")
             }
@@ -643,14 +908,14 @@ class BossPlatform extends AbsPlatform {
         }
         if (this.curUrl.includes("job-recommend")) {
             let elementNodeList = document.querySelectorAll<any>(".job-card-wrap");
-            return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.processed && !job.contact) as BossJobDetail[];
+            return this.filterPendingJobs(Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.contact) as BossJobDetail[]);
         }
         if (this.curUrl.includes("overseas")) {
             let elementNodeList = document.querySelectorAll<any>(".job-card-box");
-            return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.processed && !job.contact) as BossJobDetail[];
+            return this.filterPendingJobs(Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.contact) as BossJobDetail[]);
         }
         let elementNodeList = document.querySelectorAll<any>(".job-card-wrapper");
-        return Array.from(elementNodeList).map(item => item.__vue__.data).filter(job => !job.processed) as BossJobDetail[];
+        return this.filterPendingJobs(Array.from(elementNodeList).map(item => item.__vue__.data) as BossJobDetail[]);
     }
 
     hasNext(): boolean {
@@ -964,28 +1229,41 @@ class BossPlatform extends AbsPlatform {
 
         // 重试结束；抛出异常结束
         if (retries === 0) {
-            throw new PushReqException(jobTitle, errorMsg)
+            throw new PushReqException(jobTitle, errorMsg || "投递请求重试多次失败")
         }
 
         // 投递请求url
         let publishUrl = `https://www.zhipin.com/wapi/zpgeek/friend/add.json?securityId=` +
             `${jobDetail.securityId}&jobId=${jobDetail.encryptJobId}&lid=${jobDetail.lid}`
 
+        const token = Tools.getCookieValue("bst");
+        if (!token) {
+            throw new PushReqException(jobTitle, "未获取到zp-token，请确认已登录 Boss 直聘")
+        }
+
         let pushResp: any = {code: PushResultStatus.NOT_START, message: ""};
         try {
             // 避免频繁，每次投递前延时
             await Tools.sleep(userStore.user.preference.pi * 1000)
-            pushResp = await axiosOriginal.post(publishUrl, null, {headers: {"Zp_token": Tools.getCookieValue("bst")}});
+            pushResp = await axiosOriginal.post(publishUrl, null, {headers: {"Zp_token": token}});
         } catch (error: any) {
+            const retryMessage = this.getErrorMessage(error);
             // 重试投递
-            logger.debug(`工作【${jobTitle}】投递失败; 正在等待重试; 原因：${error.message}`)
+            logger.debug(`工作【${jobTitle}】投递失败; 正在等待重试; 原因：${retryMessage}`)
             await Tools.sleep(800);
-            return await this.doPush(jobDetail, error.message, retries - 1);
+            return await this.doPush(jobDetail, retryMessage, retries - 1);
         }
 
-        if (pushResp.data.code === PushResultStatus.FAIL && pushResp.data?.zpData?.bizData?.chatRemindDialog?.content) {
+        const responseData = pushResp?.data ?? {
+            code: PushResultStatus.FAIL,
+            message: "投递接口未返回数据"
+        };
+        const remindContent = responseData?.zpData?.bizData?.chatRemindDialog?.content;
+        const remindMessage = remindContent == null ? "" : String(remindContent);
+
+        if (responseData.code === PushResultStatus.FAIL && remindMessage) {
             // 过滤开聊提示，实际投递成功
-            if (pushResp.data?.zpData?.bizData?.chatRemindDialog?.content.include("您今天已与120位BOSS沟通")) {
+            if (remindMessage.includes("您今天已与120位BOSS沟通")) {
                 logger.debug(`当天已投递超过120次 工作【${jobTitle}】已修正为投递成功`)
                 return {
                     code: PushResultStatus.SUCCESS,
@@ -994,13 +1272,13 @@ class BossPlatform extends AbsPlatform {
             }
             // 某些条件不满足，boss限制投递，无需重试，在结果处理器中处理
             return {
-                code: 1,
-                message: pushResp.data?.zpData?.bizData?.chatRemindDialog?.content
+                code: PushResultStatus.FAIL,
+                message: remindMessage
             }
         }
         // 避免频繁
         await Tools.sleep(800);
-        return pushResp.data;
+        return responseData;
     }
 
     private bossDataCache: Map<string, any> = new Map();
@@ -1049,6 +1327,142 @@ class BossPlatform extends AbsPlatform {
         return resp.data.zpData
     }
 
+    private startPostPushQueueWorker(): void {
+        if (this.postPushQueueWorkerTimer !== null) {
+            return;
+        }
+        window.addEventListener('ai-job:chat-channel-ready', () => this.processPostPushQueue().then());
+        this.postPushQueueWorkerTimer = window.setInterval(() => {
+            this.processPostPushQueue().then();
+        }, POST_PUSH_QUEUE_WORKER_INTERVAL_MS);
+        this.processPostPushQueue().then();
+    }
+
+    private async processPostPushQueue(): Promise<void> {
+        if (this.postPushQueueProcessing) {
+            return;
+        }
+
+        const queueSnapshot = this.readPostPushQueue();
+        const pendingItems = Object.values(queueSnapshot)
+            .filter(item => item.status === 'pending' && item.retryCount < POST_PUSH_QUEUE_MAX_RETRY);
+        if (pendingItems.length === 0) {
+            return;
+        }
+
+        this.postPushQueueProcessing = true;
+        try {
+            if (!await this.ensureMessageChannel()) {
+                logger.debug(`投递后置发送队列等待聊天通道就绪，待发送 ${pendingItems.length} 条`)
+                return;
+            }
+
+            for (const pendingItem of pendingItems) {
+                let queue = this.readPostPushQueue();
+                const item = queue[pendingItem.id];
+                if (!item || item.status !== 'pending') {
+                    continue;
+                }
+
+                item.status = 'processing';
+                item.updatedAt = Date.now();
+                queue[item.id] = item;
+                this.writePostPushQueue(queue);
+
+                try {
+                    const bossId = await this.sendPostPushQueueItem(item);
+                    queue = this.readPostPushQueue();
+                    if (queue[item.id]) {
+                        queue[item.id].status = 'success';
+                        queue[item.id].job.bossId = bossId;
+                        queue[item.id].updatedAt = Date.now();
+                        queue[item.id].lastError = '';
+                        this.writePostPushQueue(queue);
+                    }
+                    this.logRecorder.info(`工作【${item.job.jobTitle}】${this.getPostPushActionName(item.action)}补发成功`)
+                } catch (error) {
+                    const errorMessage = this.getErrorMessage(error);
+                    queue = this.readPostPushQueue();
+                    if (queue[item.id]) {
+                        const nextRetryCount = queue[item.id].retryCount + 1;
+                        queue[item.id].retryCount = nextRetryCount;
+                        queue[item.id].status = nextRetryCount >= POST_PUSH_QUEUE_MAX_RETRY ? 'failed' : 'pending';
+                        queue[item.id].updatedAt = Date.now();
+                        queue[item.id].lastError = errorMessage;
+                        this.writePostPushQueue(queue);
+                    }
+                    this.logRecorder.warn(`工作【${item.job.jobTitle}】${this.getPostPushActionName(item.action)}补发失败 原因：${errorMessage}`)
+                }
+            }
+        } finally {
+            this.postPushQueueProcessing = false;
+        }
+    }
+
+    private async requestPostPushBossId(item: PostPushQueueItem, errorMsg = '', retries = 3): Promise<string> {
+        if (item.job.bossId) {
+            return item.job.bossId;
+        }
+        if (retries === 0) {
+            throw new Error(errorMsg || "获取boss数据重试多次失败");
+        }
+
+        const token = Tools.getCookieValue("bst");
+        if (!token) {
+            throw new Error("未获取到zp-token");
+        }
+
+        const data = new FormData();
+        data.append("bossId", item.job.encryptBossId);
+        data.append("securityId", item.job.securityId);
+        data.append("bossSrc", "0");
+
+        try {
+            const resp: any = await axiosOriginal({
+                url: "https://www.zhipin.com/wapi/zpchat/geek/getBossData",
+                data,
+                method: "POST",
+                headers: {Zp_token: token}
+            });
+            if (resp.data.code !== 0) {
+                throw new Error(resp.data.message || "获取boss数据失败");
+            }
+            const bossId = resp.data?.zpData?.data?.bossId;
+            if (!bossId) {
+                throw new Error("获取bossId失败");
+            }
+            return bossId.toString();
+        } catch (error) {
+            return this.requestPostPushBossId(item, this.getErrorMessage(error), retries - 1);
+        }
+    }
+
+    private async sendPostPushQueueItem(item: PostPushQueueItem): Promise<string> {
+        const fromUid = Tools.window?._PAGE?.uid;
+        if (!fromUid) {
+            throw new Error("未获取到当前用户uid");
+        }
+
+        const bossId = await this.requestPostPushBossId(item);
+        const isImageAction = item.action === 'image';
+        if (isImageAction && !item.payload.image) {
+            throw new Error("自定义图片配置为空");
+        }
+        if (!isImageAction && !item.payload.greeting) {
+            throw new Error("自定义招呼语为空");
+        }
+
+        const message = new Message({
+            form_uid: fromUid.toString(),
+            to_uid: bossId,
+            to_name: item.job.encryptBossId,
+            content: item.payload.greeting || "",
+            image: isImageAction ? item.payload.image : undefined,
+        });
+        await this.sendMessageWithRetry(message, item.job.jobTitle, `补发${this.getPostPushActionName(item.action)}`, 3);
+        return bossId;
+    }
+
 
     async pushAfterHandler(pushResult: PushResult, jobDetail: BossJobDetail): Promise<any> {
         const jobTitle = this.getJobKey(jobDetail)
@@ -1056,29 +1470,18 @@ class BossPlatform extends AbsPlatform {
         if (pushResult.message === 'Success' && pushResult.code === 0) {
             pushResultCounter.successIncr()
             this.logRecorder.info(`工作【${jobTitle}】 投递成功`)
-
-            try {
-                // 投递后发送自定义图片
-                await this.pushAfterSendImage(jobDetail);
-            } catch (e: any) {
-                this.logRecorder.warn(`工作【${jobTitle}】发送自定义图片失败 原因：${this.getErrorMessage(e)}`)
-            }
-            try {
-                // 投递后发送自定义消息
-                await this.pushAfterSendMsg(jobDetail);
-            } catch (e: any) {
-                this.logRecorder.warn(`工作【${jobTitle}】发送自定义招呼语失败 原因：${this.getErrorMessage(e)}`)
-            }
+            this.enqueuePostPushActions(jobDetail);
 
             // 标记为已沟通，在推荐页面中下一页会获取之前的数据，所以需要标记为已沟通
             jobDetail.contact = true
             return jobDetail
         }
 
-        if (pushResult.message.includes("今日沟通人数已达上限")) {
-            throw new PublishLimitExp(pushResult.message)
+        const resultMessage = pushResult?.message || "投递失败，接口未返回失败原因";
+        if (resultMessage.includes("今日沟通人数已达上限")) {
+            throw new PublishLimitExp(resultMessage)
         }
-        throw new PushReqException(jobTitle, pushResult.message)
+        throw new PushReqException(jobTitle, resultMessage)
     }
 
     /**
@@ -1155,20 +1558,55 @@ class BossPlatform extends AbsPlatform {
         await this.sendMessageWithRetry(message, jobTitle, "发送自定义图片")
     }
 
-    private async sendMessageWithRetry(message: Message, jobTitle: string, actionName: string, retries = 3): Promise<void> {
+    private hasMessageChannel(): boolean {
+        if (Tools.window.ChatWebsocket?.send || Tools.window.ChatWebsocketImage?.send) {
+            return true;
+        }
+        try {
+            return !!Tools.window.GeekChatCore?.getInstance?.()?.getClient?.()?.client?.send;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    private async ensureMessageChannel(): Promise<boolean> {
+        if (this.hasMessageChannel()) {
+            return true;
+        }
+        if (!Tools.window.AiJobEnsureChatWebsocket) {
+            return false;
+        }
+        try {
+            await Tools.window.AiJobEnsureChatWebsocket();
+        } catch (error) {
+            logger.warn("初始化聊天发送通道失败", error);
+        }
+        return this.hasMessageChannel();
+    }
+
+    private async sendMessageWithRetry(message: Message, jobTitle: string, actionName: string, retries = 8): Promise<void> {
         for (let currentRetry = 1; currentRetry <= retries; currentRetry++) {
+            if (!await this.ensureMessageChannel()) {
+                if (currentRetry < retries) {
+                    this.logRecorder.warn(`工作【${jobTitle}】${actionName}聊天通道未就绪，第 ${currentRetry}/${retries} 次，1秒后重试`)
+                    await Tools.sleep(1000);
+                    continue;
+                }
+                break;
+            }
+
             if (message.send()) {
                 this.logRecorder.info(`工作【${jobTitle}】${actionName}成功`)
                 return;
             }
 
             if (currentRetry < retries) {
-                this.logRecorder.warn(`工作【${jobTitle}】${actionName}失败，第 ${currentRetry}/${retries} 次，1秒后重试`)
+                this.logRecorder.warn(`工作【${jobTitle}】${actionName}发送异常，第 ${currentRetry}/${retries} 次，1秒后重试`)
                 await Tools.sleep(1000);
             }
         }
 
-        throw new Error(`${actionName}失败，websocket不可用或发送异常`)
+        throw new Error(`${actionName}失败，聊天通道未就绪或发送异常`)
     }
 
     private getErrorMessage(error: any): string {

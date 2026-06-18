@@ -1,7 +1,7 @@
 import {decodeMqttAndProtobuf, getMsgBody, normalizeNumber} from './utils';
 import logger from "../logging";
 import {BossOption} from '../platform/bossPlatform';
-import {Tools} from "../platform/utils";
+import {TampermonkeyApi, Tools} from "../platform/utils";
 import {TechwolfChatProtocol, protoDefinition} from "./protobuf";
 import {AiPower} from "../platform/aiPower";
 import {LogRecorder} from "../logging/record";
@@ -9,6 +9,9 @@ import {UserStore} from "../stores";
 
 const originalWebSocket = Tools.window.WebSocket as typeof WebSocket;
 const TARGET_URL: string = 'chat';
+const SOCKET_JS_URL = "https://static.zhipin.com/assets/zhipin/geek/socket.js?v=20250313";
+const CHAT_CHANNEL_READY_TIMEOUT_MS = 15 * 1000;
+const CHAT_CHANNEL_RETRY_INTERVAL_MS = 1000;
 const logRecorder: LogRecorder = new LogRecorder('hook');
 logRecorder.info("---------------------------------------------------------------");
 logRecorder.info("WS Hook Start");
@@ -21,6 +24,7 @@ let receiveInterceptor: ((data: any) => any) | null = null;
 //======================================================================================================================
 let hookMap = new Map()
 let hookPrototype = false
+let chatWebsocketSetupPromise: Promise<boolean> | null = null;
 
 class WebSocketProxy extends originalWebSocket {
     constructor(url: string, protocols?: string | string[]) {
@@ -65,31 +69,73 @@ class WebSocketProxy extends originalWebSocket {
 
 Tools.window.WebSocket = WebSocketProxy as any;
 
-// 更加健壮的初始化逻辑
-if (!Tools.window.ChatWebsocket) {
-    setChatWebsocket().then(() => {
-        setTimeout(() => {
-            try {
-                if (Tools.window.ChatWebsocketImage && typeof Tools.window.ChatWebsocketImage.init === 'function') {
-                    Tools.window.ChatWebsocketImage.init();
-                    logger.info("ChatWebsocketImage 初始化成功");
-                } else {
-                    logger.warn("ChatWebsocketImage 尚未准备好，将在 3 秒后重试...");
-                    setTimeout(() => {
-                        if (Tools.window.ChatWebsocketImage?.init) {
-                            Tools.window.ChatWebsocketImage.init();
-                            logger.info("ChatWebsocketImage 重试初始化成功");
-                        }
-                    }, 3000);
-                }
-            } catch (e) {
-                logger.error("ChatWebsocketImage init 报错:", e);
-            }
-        }, 2000)
-    }).catch(err => {
-        logger.error("setChatWebsocket 执行失败:", err);
-    });
+function hasChatSendChannel(): boolean {
+    if (Tools.window.ChatWebsocket?.send || Tools.window.ChatWebsocketImage?.send) {
+        return true;
+    }
+    try {
+        return !!Tools.window.GeekChatCore?.getInstance?.()?.getClient?.()?.client?.send;
+    } catch (_) {
+        return false;
+    }
 }
+
+function initChatWebsocketImage(): void {
+    try {
+        if (Tools.window.ChatWebsocketImage?.init) {
+            Tools.window.ChatWebsocketImage.init();
+            logger.info("ChatWebsocketImage 初始化完成");
+        }
+    } catch (e) {
+        logger.error("ChatWebsocketImage init 报错:", e);
+    }
+}
+
+async function ensureChatWebsocketImage(): Promise<boolean> {
+    if (hasChatSendChannel()) {
+        return true;
+    }
+    if (chatWebsocketSetupPromise) {
+        return chatWebsocketSetupPromise;
+    }
+
+    chatWebsocketSetupPromise = (async () => {
+        if (!Tools.window.ChatWebsocketImage?.send) {
+            await setChatWebsocket();
+        }
+
+        const deadline = Date.now() + CHAT_CHANNEL_READY_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+            if (hasChatSendChannel()) {
+                return true;
+            }
+            initChatWebsocketImage();
+            await Tools.sleep(CHAT_CHANNEL_RETRY_INTERVAL_MS);
+        }
+        return hasChatSendChannel();
+    })().finally(() => {
+        if (!hasChatSendChannel()) {
+            chatWebsocketSetupPromise = null;
+        }
+    });
+
+    return chatWebsocketSetupPromise;
+}
+
+Tools.window.AiJobEnsureChatWebsocket = ensureChatWebsocketImage;
+
+ensureChatWebsocketImage()
+    .then(ready => {
+        if (ready) {
+            logger.info("AI Job 聊天发送通道已就绪");
+            window.dispatchEvent(new CustomEvent('ai-job:chat-channel-ready'));
+        } else {
+            logger.warn("AI Job 聊天发送通道未就绪，投递后自定义消息将延迟重试或跳过");
+        }
+    })
+    .catch(err => {
+        logger.error("AI Job 聊天发送通道初始化失败:", err);
+    });
 
 /**
  * Hook existing WebSocket instances by intercepting the send method
@@ -271,19 +317,37 @@ function filter(msg: string, wsData: any): boolean {
 /**
  * 拦截并修改目标脚本（如 socket.js），将 ChatWebsocket 暴露到 window 对象
  */
+function fetchSocketScript(): Promise<string> {
+    return new Promise((resolve, reject) => {
+        TampermonkeyApi.GMXmlHttpRequest({
+            method: "GET",
+            url: SOCKET_JS_URL,
+            timeout: 10000,
+            onload: (resp: any) => {
+                if (resp.status >= 200 && resp.status < 300) {
+                    resolve(resp.responseText);
+                    return;
+                }
+                reject(new Error(`socket.js 请求失败，状态码: ${resp.status}`));
+            },
+            onerror: reject,
+            ontimeout: () => reject(new Error("socket.js 请求超时")),
+        });
+    });
+}
+
 async function setChatWebsocket(): Promise<void> {
     logger.info("build ChatWebsocket")
-    // 劫持脚本内容
-    return fetch("https://static.zhipin.com/assets/zhipin/geek/socket.js?v=20250313")
-        .then((res) => res.text())
+    return fetchSocketScript()
         .then((code) => {
             // 在代码开头注入所需的全局变量
             let injectedVars = `const __PROTO_FILE_VAR__ = '${protoDefinition}';\n`;
 
             // 修改代码：在 ChatWebsocket 定义后暴露到 window
             let str = '\nTools.window.ChatWebsocketImage = ChatWebsocket;\nconsole.log("set ChatWebsocket 成功", ChatWebsocket)\n';
+            let exposeCode = '\nif (typeof ChatWebsocket !== "undefined") { Tools.window.ChatWebsocketImage = ChatWebsocket; console.log("set ChatWebsocket 成功", ChatWebsocket); }\n';
             let modifiedCode = injectedVars + code.replaceAll(/if \(\"EventBus\" in window\) \{\s+EventBus.subscribe\("CHAT_SEND_TEXT".*fail\);\s+}\);\s+}/gs, str)
-                .replace("ChatWebsocket.init()", "");
+                .replace("ChatWebsocket.init()", "") + exposeCode;
 
             try {
                 // 使用原生的 Function 执行代码
@@ -291,10 +355,12 @@ async function setChatWebsocket(): Promise<void> {
                 logger.info("window 挂载 ChatWebsocket 成功", Tools.window.ChatWebsocketImage);
             } catch (e) {
                 logger.error("执行劫持脚本失败:", e);
+                throw e;
             }
             return Promise.resolve();
         })
         .catch((err) => {
             logger.error("setChatWebsocket 捕获到网络或执行异常:", err);
+            throw err;
         });
 }

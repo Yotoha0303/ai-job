@@ -81,7 +81,7 @@
         " placement="bottom">
             <el-button class="action-button auto-search-button" :icon="Collection as any" :type="autoSearchBtnType"
                        @click="handlerAutoSearch"
-                       :disabled="(autoSearchRunning && autoSearchQuickPush) || (!autoSearchRunning && pushStatus === PushStatus.PUSHING) || autoSearchKeywords.length === 0">
+                       :disabled="(autoSearchRunning && autoSearchMode !== 'search') || (!autoSearchRunning && pushStatus === PushStatus.PUSHING) || autoSearchKeywords.length === 0">
                 <span class="action-label">{{ autoSearchBtnText }}</span>
             </el-button>
         </el-tooltip>
@@ -96,10 +96,54 @@
         " placement="bottom">
             <el-button class="action-button quick-push-button" :icon="Promotion as any" :type="quickPushBtnType"
                        @click="handlerQuickPush"
-                       :disabled="(autoSearchRunning && !autoSearchQuickPush) || (!autoSearchRunning && pushStatus === PushStatus.PUSHING) || autoSearchKeywords.length === 0">
+                       :disabled="(autoSearchRunning && autoSearchMode !== 'quickPush') || (!autoSearchRunning && pushStatus === PushStatus.PUSHING) || autoSearchKeywords.length === 0">
                 <span class="action-label">{{ quickPushBtnText }}</span>
             </el-button>
         </el-tooltip>
+
+        <div class="fuzzy-push-controls" aria-label="模糊快投设置">
+            <label class="fuzzy-field fuzzy-keyword-field">
+                <span class="fuzzy-field-label">种子岗位关键词</span>
+                <el-input v-model="fuzzyPushKeyword"
+                          class="fuzzy-keyword-input"
+                          placeholder="如 Go后端"
+                          clearable
+                          :disabled="autoSearchRunning && autoSearchMode !== 'fuzzyPush'"/>
+            </label>
+            <label class="fuzzy-field fuzzy-count-field">
+                <span class="fuzzy-field-label">本轮最多投递</span>
+                <el-input-number v-model="fuzzyPushMaxCount"
+                                 class="fuzzy-count-input"
+                                 :min="1"
+                                 :max="100"
+                                 size="small"
+                                 :disabled="autoSearchRunning && autoSearchMode !== 'fuzzyPush'"/>
+            </label>
+            <div class="fuzzy-options">
+                <el-tooltip effect="dark" content="沿用当前BOSS搜索页的城市、薪资、经验等筛选条件，只替换搜索关键词。" placement="bottom">
+                    <el-checkbox v-model="fuzzyPushReuseCurrentSearchParams"
+                                 :disabled="autoSearchRunning && autoSearchMode !== 'fuzzyPush'">沿用BOSS筛选</el-checkbox>
+                </el-tooltip>
+                <el-tooltip effect="dark" content="开启后，模糊快投仍会经过偏好设置里的AI语义匹配过滤。" placement="bottom">
+                    <el-checkbox v-model="userStore.user.preference.afE"
+                                 :disabled="autoSearchRunning && autoSearchMode !== 'fuzzyPush'">AI匹配过滤</el-checkbox>
+                </el-tooltip>
+            </div>
+            <el-tooltip effect="dark" raw-content :content="`
+        输入一个种子岗位关键词，系统会扩展相似关键词并逐个搜索投递。<br/>
+        当前扩展：${fuzzyPushKeywordListPreview.length ? fuzzyPushKeywordListPreview.join('、') : '请输入关键词'}<br/>
+        本轮最多投递：${fuzzyPushMaxCount} 个岗位。<br/>
+        投递仍复用现有岗位偏好、薪资、公司、内容和AI匹配过滤规则。
+        `" placement="bottom">
+                <el-button class="action-button fuzzy-push-button"
+                           :icon="Promotion as any"
+                           :type="fuzzyPushBtnType"
+                           @click="handlerFuzzyPush"
+                           :disabled="(autoSearchRunning && autoSearchMode !== 'fuzzyPush') || (!autoSearchRunning && pushStatus === PushStatus.PUSHING) || fuzzyPushKeywordListPreview.length === 0">
+                    <span class="action-label">{{ fuzzyPushBtnText }}</span>
+                </el-button>
+            </el-tooltip>
+        </div>
         <el-tag v-show="autoSearchRunning" class="auto-search-tag" type="info" effect="plain">
             {{ autoSearchProgressText }}
         </el-tag>
@@ -366,15 +410,35 @@ const importResumeLoading = ref<boolean>(false);
 const productListLoading = ref<boolean>(false);
 const scrollBottomLoading = ref<boolean>(false);
 
+type AutoSearchMode = 'search' | 'quickPush' | 'fuzzyPush';
+
 interface AutoSearchState {
     running: boolean;
     index: number;
     startedAt: number;
     nextSearchAt?: number;
     quickPush?: boolean;
+    pushedIndexes?: number[];
+    mode?: AutoSearchMode;
+    keywords?: string[];
+    sourceKeyword?: string;
+    maxPushCount?: number;
+    successCountAtStart?: number;
+    reuseCurrentSearchParams?: boolean;
+}
+
+interface PushResumeState {
+    running: boolean;
+    url: string;
+    startedAt: number;
+    mockPush?: boolean;
+    selfDefPushCountLimit?: number;
+    successCountAtStart?: number;
 }
 
 const AUTO_SEARCH_STATE_KEY = 'ai-job:auto-search:static-keywords-v1';
+const PUSH_RESUME_STATE_KEY = 'ai-job:push:resume-state-v1';
+const PUSH_RESUME_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const AUTO_SEARCH_INTERVAL_MINUTES = 5;
 const AUTO_SEARCH_INTERVAL_MS = AUTO_SEARCH_INTERVAL_MINUTES * 60 * 1000;
 const AUTO_SEARCH_REFRESH_INTERVAL_MINUTES = 8;
@@ -392,30 +456,45 @@ const autoSearchKeywords = ref<string[]>(
         .map(item => item.trim())
         .filter(item => !!item && !isInvalidAutoSearchKeyword(item))
 );
+const FUZZY_PUSH_KEYWORD_MAP: Record<string, string[]> = {
+    "Java后端": ["Java后端", "Java开发", "Java工程师", "后端开发", "后端工程师", "Spring Boot", "微服务开发", "服务端开发"],
+    "Go后端": ["Go后端", "Golang", "Go开发", "后端开发", "后端工程师", "云原生开发", "微服务开发"],
+    "前端": ["前端", "前端开发", "前端工程师", "Web前端", "Vue", "React", "小程序开发"],
+    "测试": ["测试", "软件测试", "测试工程师", "自动化测试", "测试开发", "QA"],
+};
+const fuzzyPushKeyword = ref('');
+const fuzzyPushMaxCount = ref(100);
+const fuzzyPushReuseCurrentSearchParams = ref(AUTO_SEARCH_CONFIG.reuseCurrentSearchParams);
 const autoSearchRunning = ref(false);
 const autoSearchQuickPush = ref(false);
+const autoSearchMode = ref<AutoSearchMode>('search');
+const autoSearchKeywordTotal = ref(autoSearchKeywords.value.length);
+const autoSearchModeText = ref('自动搜索');
 const autoSearchNextIndex = ref(0);
 const autoSearchCurrentKeyword = ref('');
 const autoSearchNextSearchAt = ref(0);
 const autoSearchRemainingSeconds = ref(0);
-const autoSearchBtnType = computed(() => autoSearchRunning.value && !autoSearchQuickPush.value ? 'warning' : 'primary');
-const autoSearchBtnText = computed(() => autoSearchRunning.value && !autoSearchQuickPush.value ? '停止搜索' : '自动搜索');
-const quickPushBtnType = computed(() => autoSearchRunning.value && autoSearchQuickPush.value ? 'warning' : 'success');
-const quickPushBtnText = computed(() => autoSearchRunning.value && autoSearchQuickPush.value ? '停止快投' : '快速投递');
+const fuzzyPushKeywordListPreview = computed(() => buildFuzzyPushKeywords(fuzzyPushKeyword.value));
+const autoSearchBtnType = computed(() => autoSearchRunning.value && autoSearchMode.value === 'search' ? 'warning' : 'primary');
+const autoSearchBtnText = computed(() => autoSearchRunning.value && autoSearchMode.value === 'search' ? '停止搜索' : '自动搜索');
+const quickPushBtnType = computed(() => autoSearchRunning.value && autoSearchMode.value === 'quickPush' ? 'warning' : 'success');
+const quickPushBtnText = computed(() => autoSearchRunning.value && autoSearchMode.value === 'quickPush' ? '停止快投' : '快速投递');
+const fuzzyPushBtnType = computed(() => autoSearchRunning.value && autoSearchMode.value === 'fuzzyPush' ? 'warning' : 'success');
+const fuzzyPushBtnText = computed(() => autoSearchRunning.value && autoSearchMode.value === 'fuzzyPush' ? '停止模糊快投' : '开始模糊快投');
 const autoSearchProgressText = computed(() => {
     if (!autoSearchRunning.value) {
         return `共 ${autoSearchKeywords.value.length} 个关键词`;
     }
-    const modeText = autoSearchQuickPush.value ? '快速投递' : '自动搜索';
-    const currentNo = Math.min(autoSearchNextIndex.value, autoSearchKeywords.value.length);
+    const modeText = autoSearchModeText.value;
+    const currentNo = Math.min(autoSearchNextIndex.value, autoSearchKeywordTotal.value);
     const currentKeywordText = autoSearchCurrentKeyword.value ? `当前：${autoSearchCurrentKeyword.value}` : '准备开始';
     if (!autoSearchNextSearchAt.value) {
-        return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywords.value.length})，正在设置下一次搜索时间`;
+        return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywordTotal.value})，正在设置下一次搜索时间`;
     }
     if (autoSearchQuickPush.value) {
-        return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywords.value.length})，投递完成后立即搜索下一条，兜底倒计时 ${formatAutoSearchCountdown(autoSearchRemainingSeconds.value)}`;
+        return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywordTotal.value})，投递完成后立即搜索下一条，兜底倒计时 ${formatAutoSearchCountdown(autoSearchRemainingSeconds.value)}`;
     }
-    return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywords.value.length})，下次搜索 ${formatAutoSearchTime(autoSearchNextSearchAt.value)}，倒计时 ${formatAutoSearchCountdown(autoSearchRemainingSeconds.value)}`;
+    return `${modeText}，${currentKeywordText} (${currentNo}/${autoSearchKeywordTotal.value})，下次搜索 ${formatAutoSearchTime(autoSearchNextSearchAt.value)}，倒计时 ${formatAutoSearchCountdown(autoSearchRemainingSeconds.value)}`;
 });
 let autoSearchTimer: number | null = null;
 let autoSearchPushTimer: number | null = null;
@@ -635,6 +714,86 @@ const handlerScrollToBottomThenTop = async () => {
     }
 }
 
+const sanitizeKeywordList = (keywords: string[]): string[] => {
+    return Array.from(new Set(
+        keywords
+            .map(item => item.trim())
+            .filter(item => !!item && !isInvalidAutoSearchKeyword(item))
+    ));
+}
+
+const buildFuzzyPushKeywords = (keyword: string): string[] => {
+    const trimmedKeyword = keyword.trim();
+    if (!trimmedKeyword) {
+        return [];
+    }
+    const lowerKeyword = trimmedKeyword.toLowerCase();
+    const genericKeywords = [
+        trimmedKeyword,
+        trimmedKeyword.includes("工程师") ? trimmedKeyword : `${trimmedKeyword}工程师`,
+        trimmedKeyword.includes("开发") ? trimmedKeyword : `${trimmedKeyword}开发`,
+        trimmedKeyword.includes("后端") ? "后端开发" : "",
+        trimmedKeyword.includes("后端") ? "后端工程师" : "",
+        lowerKeyword.includes("java") ? "Spring Boot" : "",
+        lowerKeyword.includes("java") ? "微服务开发" : "",
+        lowerKeyword.includes("go") || lowerKeyword.includes("golang") ? "Golang" : "",
+        lowerKeyword.includes("go") || lowerKeyword.includes("golang") ? "云原生开发" : "",
+    ];
+    return sanitizeKeywordList([
+        ...(FUZZY_PUSH_KEYWORD_MAP[trimmedKeyword] || []),
+        ...genericKeywords,
+    ]);
+}
+
+const getAutoSearchKeywords = (state?: AutoSearchState | null): string[] => {
+    return sanitizeKeywordList(state?.keywords?.length ? state.keywords : autoSearchKeywords.value);
+}
+
+const getAutoSearchMode = (state?: AutoSearchState | null): AutoSearchMode => {
+    if (state?.mode) {
+        return state.mode;
+    }
+    return state?.quickPush ? 'quickPush' : 'search';
+}
+
+const getAutoSearchModeText = (state?: AutoSearchState | null): string => {
+    const mode = getAutoSearchMode(state);
+    if (mode === 'fuzzyPush') {
+        return '模糊快投';
+    }
+    if (mode === 'quickPush') {
+        return '快速投递';
+    }
+    return '自动搜索';
+}
+
+const getAutoSearchSuccessCount = (state: AutoSearchState): number => {
+    const successCountAtStart = typeof state.successCountAtStart === 'number'
+        ? state.successCountAtStart
+        : pushResultCounter.successCount;
+    return Math.max(0, pushResultCounter.successCount - successCountAtStart);
+}
+
+const hasAutoSearchReachedMaxPush = (state: AutoSearchState): boolean => {
+    return typeof state.maxPushCount === 'number'
+        && state.maxPushCount > 0
+        && getAutoSearchSuccessCount(state) >= state.maxPushCount;
+}
+
+const applyAutoSearchPushLimit = (state: AutoSearchState): boolean => {
+    if (typeof state.maxPushCount !== 'number' || state.maxPushCount <= 0) {
+        return true;
+    }
+    const remainingLimit = state.maxPushCount - getAutoSearchSuccessCount(state);
+    if (remainingLimit <= 0) {
+        finishAutoSearch();
+        return false;
+    }
+    platform.selfDefPushCountLimit = remainingLimit;
+    selfDefPushCountLimit.value = remainingLimit;
+    return true;
+}
+
 const readAutoSearchState = (): AutoSearchState | null => {
     const rawState = localStorage.getItem(AUTO_SEARCH_STATE_KEY);
     if (!rawState) {
@@ -646,12 +805,25 @@ const readAutoSearchState = (): AutoSearchState | null => {
             localStorage.removeItem(AUTO_SEARCH_STATE_KEY);
             return null;
         }
+        const keywords = getAutoSearchKeywords(state);
+        const mode = getAutoSearchMode(state);
         return {
             running: state.running,
-            index: normalizeAutoSearchIndex(state.index),
+            index: normalizeAutoSearchIndex(state.index, keywords),
             startedAt: Number(state.startedAt) || Date.now(),
             nextSearchAt: Number(state.nextSearchAt) || 0,
-            quickPush: !!state.quickPush,
+            quickPush: mode === 'quickPush' || mode === 'fuzzyPush' || !!state.quickPush,
+            pushedIndexes: normalizeAutoSearchPushedIndexes(state.pushedIndexes, keywords),
+            mode,
+            keywords,
+            sourceKeyword: state.sourceKeyword || '',
+            maxPushCount: typeof state.maxPushCount === 'number' ? state.maxPushCount : undefined,
+            successCountAtStart: typeof state.successCountAtStart === 'number'
+                ? state.successCountAtStart
+                : pushResultCounter.successCount,
+            reuseCurrentSearchParams: typeof state.reuseCurrentSearchParams === 'boolean'
+                ? state.reuseCurrentSearchParams
+                : AUTO_SEARCH_CONFIG.reuseCurrentSearchParams,
         };
     } catch (error) {
         logger.warn("读取自动搜索状态失败", error);
@@ -661,17 +833,100 @@ const readAutoSearchState = (): AutoSearchState | null => {
 }
 
 const saveAutoSearchState = (state: AutoSearchState) => {
+    const keywords = getAutoSearchKeywords(state);
+    const mode = getAutoSearchMode(state);
     localStorage.setItem(AUTO_SEARCH_STATE_KEY, JSON.stringify({
         ...state,
-        index: normalizeAutoSearchIndex(state.index),
+        mode,
+        keywords,
+        quickPush: mode === 'quickPush' || mode === 'fuzzyPush' || !!state.quickPush,
+        index: normalizeAutoSearchIndex(state.index, keywords),
+        pushedIndexes: normalizeAutoSearchPushedIndexes(state.pushedIndexes, keywords),
     }));
 }
 
-const normalizeAutoSearchIndex = (index: number): number => {
+const normalizeAutoSearchIndex = (index: number, keywords = autoSearchKeywords.value): number => {
     if (!Number.isFinite(index)) {
         return 0;
     }
-    return Math.max(0, Math.min(Math.floor(index), autoSearchKeywords.value.length));
+    return Math.max(0, Math.min(Math.floor(index), keywords.length));
+}
+
+const normalizeAutoSearchPushedIndexes = (indexes?: number[], keywords = autoSearchKeywords.value): number[] => {
+    if (!Array.isArray(indexes)) {
+        return [];
+    }
+    return Array.from(new Set(indexes
+        .map(index => Math.floor(Number(index)))
+        .filter(index => Number.isFinite(index) && index >= 0 && index < keywords.length)
+    ));
+}
+
+const getCurrentAutoSearchKeywordIndex = (state: AutoSearchState): number => {
+    return normalizeAutoSearchIndex(state.index, getAutoSearchKeywords(state)) - 1;
+}
+
+const isCurrentAutoSearchKeywordPushed = (state: AutoSearchState): boolean => {
+    const keywordIndex = getCurrentAutoSearchKeywordIndex(state);
+    return keywordIndex >= 0 && normalizeAutoSearchPushedIndexes(state.pushedIndexes, getAutoSearchKeywords(state)).includes(keywordIndex);
+}
+
+const isSamePushResumeUrl = (url: string): boolean => {
+    try {
+        const savedUrl = new URL(url);
+        const currentUrl = new URL(window.location.href);
+        return savedUrl.origin === currentUrl.origin
+            && savedUrl.pathname === currentUrl.pathname
+            && savedUrl.search === currentUrl.search;
+    } catch (error) {
+        logger.warn("解析投递恢复地址失败", error);
+        return false;
+    }
+}
+
+const readPushResumeState = (): PushResumeState | null => {
+    const rawState = localStorage.getItem(PUSH_RESUME_STATE_KEY);
+    if (!rawState) {
+        return null;
+    }
+    try {
+        const state = JSON.parse(rawState) as PushResumeState;
+        if (!state?.running || !state.url || Date.now() - Number(state.startedAt) > PUSH_RESUME_MAX_AGE_MS) {
+            localStorage.removeItem(PUSH_RESUME_STATE_KEY);
+            return null;
+        }
+        return {
+            running: true,
+            url: state.url,
+            startedAt: Number(state.startedAt) || Date.now(),
+            mockPush: !!state.mockPush,
+            selfDefPushCountLimit: typeof state.selfDefPushCountLimit === 'number'
+                ? state.selfDefPushCountLimit
+                : -1,
+            successCountAtStart: typeof state.successCountAtStart === 'number'
+                ? state.successCountAtStart
+                : pushResultCounter.successCount,
+        };
+    } catch (error) {
+        logger.warn("读取投递恢复状态失败", error);
+        localStorage.removeItem(PUSH_RESUME_STATE_KEY);
+        return null;
+    }
+}
+
+const savePushResumeState = () => {
+    localStorage.setItem(PUSH_RESUME_STATE_KEY, JSON.stringify({
+        running: true,
+        url: window.location.href,
+        startedAt: Date.now(),
+        mockPush: mockPush.value,
+        selfDefPushCountLimit: platform.selfDefPushCountLimit,
+        successCountAtStart: pushResultCounter.successCount,
+    } as PushResumeState));
+}
+
+const clearPushResumeState = () => {
+    localStorage.removeItem(PUSH_RESUME_STATE_KEY);
 }
 
 const clearAutoSearchTimer = () => {
@@ -758,6 +1013,9 @@ const applyAutoSearchState = (state: AutoSearchState | null) => {
     if (!state?.running) {
         autoSearchRunning.value = false;
         autoSearchQuickPush.value = false;
+        autoSearchMode.value = 'search';
+        autoSearchKeywordTotal.value = autoSearchKeywords.value.length;
+        autoSearchModeText.value = '自动搜索';
         autoSearchNextIndex.value = 0;
         autoSearchCurrentKeyword.value = '';
         autoSearchNextSearchAt.value = 0;
@@ -769,10 +1027,14 @@ const applyAutoSearchState = (state: AutoSearchState | null) => {
 
     autoSearchRunning.value = true;
     autoSearchQuickPush.value = !!state.quickPush;
+    autoSearchMode.value = getAutoSearchMode(state);
+    autoSearchModeText.value = getAutoSearchModeText(state);
+    const keywords = getAutoSearchKeywords(state);
+    autoSearchKeywordTotal.value = keywords.length;
     startAutoSearchRefreshTimer();
-    autoSearchNextIndex.value = normalizeAutoSearchIndex(state.index);
+    autoSearchNextIndex.value = normalizeAutoSearchIndex(state.index, keywords);
     autoSearchCurrentKeyword.value = autoSearchNextIndex.value > 0
-        ? autoSearchKeywords.value[autoSearchNextIndex.value - 1]
+        ? keywords[autoSearchNextIndex.value - 1]
         : '';
     autoSearchNextSearchAt.value = Number(state.nextSearchAt) || 0;
     startAutoSearchCountdown();
@@ -808,9 +1070,9 @@ const hasSameSearchParams = (currentUrl: URL, targetUrl: URL): boolean => {
         && currentPairs.every((pair, index) => pair === targetPairs[index]);
 }
 
-const buildBossSearchUrl = (keyword: string): string => {
+const buildBossSearchUrl = (keyword: string, reuseCurrentSearchParams = AUTO_SEARCH_CONFIG.reuseCurrentSearchParams): string => {
     const currentUrl = new URL(window.location.href);
-    const url = AUTO_SEARCH_CONFIG.reuseCurrentSearchParams && isAutoSearchPageUrl(currentUrl)
+    const url = reuseCurrentSearchParams && isAutoSearchPageUrl(currentUrl)
         ? currentUrl
         : getAutoSearchBaseUrl();
 
@@ -834,13 +1096,14 @@ const repairMalformedAutoSearchUrl = (state: AutoSearchState): boolean => {
         return false;
     }
 
-    const keywordIndex = normalizeAutoSearchIndex(state.index) - 1;
-    const keyword = autoSearchKeywords.value[keywordIndex];
+    const keywords = getAutoSearchKeywords(state);
+    const keywordIndex = normalizeAutoSearchIndex(state.index, keywords) - 1;
+    const keyword = keywords[keywordIndex];
     if (!keyword) {
         return false;
     }
 
-    const targetUrl = buildBossSearchUrl(keyword);
+    const targetUrl = buildBossSearchUrl(keyword, state.reuseCurrentSearchParams);
     logRecorder.warn(`自动搜索关键词异常，正在修正为：${keyword}`);
     if (!isSameBossSearchUrl(targetUrl)) {
         window.location.assign(targetUrl);
@@ -881,9 +1144,28 @@ const extendAutoSearchForRunningPush = (): boolean => {
 }
 
 const isCurrentAutoSearchResultPage = (state: AutoSearchState): boolean => {
-    const keywordIndex = normalizeAutoSearchIndex(state.index) - 1;
-    const keyword = autoSearchKeywords.value[keywordIndex];
-    return !!keyword && isSameBossSearchUrl(buildBossSearchUrl(keyword));
+    const keywords = getAutoSearchKeywords(state);
+    const keywordIndex = normalizeAutoSearchIndex(state.index, keywords) - 1;
+    const keyword = keywords[keywordIndex];
+    return !!keyword && isSameBossSearchUrl(buildBossSearchUrl(keyword, state.reuseCurrentSearchParams));
+}
+
+const markCurrentAutoSearchKeywordPushed = () => {
+    const state = readAutoSearchState();
+    if (!state?.running || !isCurrentAutoSearchResultPage(state)) {
+        return;
+    }
+    const keywordIndex = getCurrentAutoSearchKeywordIndex(state);
+    if (keywordIndex < 0) {
+        return;
+    }
+    const pushedIndexes = normalizeAutoSearchPushedIndexes(state.pushedIndexes, getAutoSearchKeywords(state));
+    if (!pushedIndexes.includes(keywordIndex)) {
+        saveAutoSearchState({
+            ...state,
+            pushedIndexes: [...pushedIndexes, keywordIndex],
+        });
+    }
 }
 
 const pauseAutoSearchPush = () => {
@@ -898,9 +1180,22 @@ const scheduleAutoSearchPush = (state: AutoSearchState) => {
     if (!state.running || !isCurrentAutoSearchResultPage(state)) {
         return;
     }
+    if (hasAutoSearchReachedMaxPush(state)) {
+        finishAutoSearch();
+        return;
+    }
+    if (isCurrentAutoSearchKeywordPushed(state)) {
+        return;
+    }
     autoSearchPushTimer = window.setTimeout(() => {
         const latestState = readAutoSearchState();
         if (!latestState?.running || !isCurrentAutoSearchResultPage(latestState)) {
+            return;
+        }
+        if (isCurrentAutoSearchKeywordPushed(latestState)) {
+            return;
+        }
+        if (!applyAutoSearchPushLimit(latestState)) {
             return;
         }
         if (pushStatus.value === PushStatus.PUSHING) {
@@ -912,28 +1207,30 @@ const scheduleAutoSearchPush = (state: AutoSearchState) => {
 }
 
 const finishAutoSearch = () => {
-    const quickPush = autoSearchQuickPush.value;
+    const state = readAutoSearchState();
+    const modeText = getAutoSearchModeText(state);
     clearAutoSearchTimer();
     pauseAutoSearchPush();
     localStorage.removeItem(AUTO_SEARCH_STATE_KEY);
     applyAutoSearchState(null);
-    logRecorder.info(quickPush ? "快速投递完成" : "自动搜索完成");
+    logRecorder.info(`${modeText}完成`);
     ElMessage({
-        message: quickPush ? "快速投递完成" : "自动搜索完成",
+        message: `${modeText}完成`,
         type: 'success',
         duration: 3000
     })
 }
 
 const stopAutoSearch = () => {
-    const quickPush = autoSearchQuickPush.value;
+    const state = readAutoSearchState();
+    const modeText = getAutoSearchModeText(state);
     clearAutoSearchTimer();
     pauseAutoSearchPush();
     localStorage.removeItem(AUTO_SEARCH_STATE_KEY);
     applyAutoSearchState(null);
-    logRecorder.info(quickPush ? "已停止快速投递" : "已停止自动搜索");
+    logRecorder.info(`已停止${modeText}`);
     ElMessage({
-        message: quickPush ? "已停止快速投递" : "已停止自动搜索",
+        message: `已停止${modeText}`,
         type: 'warning',
         duration: 3000
     })
@@ -948,13 +1245,18 @@ const runNextAutoSearch = () => {
     if (extendAutoSearchForRunningPush()) {
         return;
     }
-    if (state.index >= autoSearchKeywords.value.length) {
+    if (hasAutoSearchReachedMaxPush(state)) {
+        finishAutoSearch();
+        return;
+    }
+    const keywords = getAutoSearchKeywords(state);
+    if (state.index >= keywords.length) {
         finishAutoSearch();
         return;
     }
 
     pauseAutoSearchPush();
-    const keyword = autoSearchKeywords.value[state.index];
+    const keyword = keywords[state.index];
     const nextState = {
         ...state,
         index: state.index + 1,
@@ -962,9 +1264,9 @@ const runNextAutoSearch = () => {
     };
     saveAutoSearchState(nextState);
     applyAutoSearchState(nextState);
-    logRecorder.info(`${state.quickPush ? '快速投递搜索关键词' : '自动搜索关键词'}(${nextState.index}/${autoSearchKeywords.value.length})：${keyword}`);
+    logRecorder.info(`${getAutoSearchModeText(state)}关键词(${nextState.index}/${keywords.length})：${keyword}`);
 
-    const targetUrl = buildBossSearchUrl(keyword);
+    const targetUrl = buildBossSearchUrl(keyword, state.reuseCurrentSearchParams);
     if (isSameBossSearchUrl(targetUrl)) {
         scheduleNextAutoSearch(AUTO_SEARCH_INTERVAL_MS);
         scheduleAutoSearchPush(nextState);
@@ -973,7 +1275,15 @@ const runNextAutoSearch = () => {
     window.location.assign(targetUrl);
 }
 
-const startAutoSearch = (quickPush = false) => {
+const startKeywordQueue = (
+    keywords: string[],
+    mode: AutoSearchMode,
+    options: {
+        sourceKeyword?: string;
+        maxPushCount?: number;
+        reuseCurrentSearchParams?: boolean;
+    } = {}
+) => {
     if (!loginInterceptor()) {
         return;
     }
@@ -985,10 +1295,19 @@ const startAutoSearch = (quickPush = false) => {
         })
         return;
     }
-    if (autoSearchKeywords.value.length === 0) {
+    const safeKeywords = sanitizeKeywordList(keywords);
+    if (safeKeywords.length === 0) {
         ElMessage({
-            message: "关键词库为空，请先维护 src/config/autoSearchKeywords.ts",
+            message: mode === 'fuzzyPush' ? "模糊快投关键词为空" : "关键词库为空，请先维护 src/config/autoSearchKeywords.ts",
             type: 'error',
+            duration: 3000
+        })
+        return;
+    }
+    if (mode === 'fuzzyPush' && (!options.maxPushCount || options.maxPushCount <= 0)) {
+        ElMessage({
+            message: "模糊快投最大投递数必须大于0",
+            type: 'warning',
             duration: 3000
         })
         return;
@@ -999,12 +1318,29 @@ const startAutoSearch = (quickPush = false) => {
         index: 0,
         startedAt: Date.now(),
         nextSearchAt: 0,
-        quickPush,
+        quickPush: mode === 'quickPush' || mode === 'fuzzyPush',
+        pushedIndexes: [],
+        mode,
+        keywords: safeKeywords,
+        sourceKeyword: options.sourceKeyword,
+        maxPushCount: options.maxPushCount,
+        successCountAtStart: pushResultCounter.successCount,
+        reuseCurrentSearchParams: typeof options.reuseCurrentSearchParams === 'boolean'
+            ? options.reuseCurrentSearchParams
+            : AUTO_SEARCH_CONFIG.reuseCurrentSearchParams,
     };
     saveAutoSearchState(initState);
     applyAutoSearchState(initState);
-    logRecorder.info(`${quickPush ? '开始快速投递' : '开始自动搜索'}，共${autoSearchKeywords.value.length}个关键词`);
+    if (mode === 'fuzzyPush' && options.maxPushCount) {
+        platform.selfDefPushCountLimit = options.maxPushCount;
+        selfDefPushCountLimit.value = options.maxPushCount;
+    }
+    logRecorder.info(`${getAutoSearchModeText(initState)}启动，共${safeKeywords.length}个关键词：${safeKeywords.join("、")}`);
     runNextAutoSearch();
+}
+
+const startAutoSearch = (quickPush = false) => {
+    startKeywordQueue(autoSearchKeywords.value, quickPush ? 'quickPush' : 'search');
 }
 
 const resumeAutoSearch = () => {
@@ -1013,7 +1349,7 @@ const resumeAutoSearch = () => {
         applyAutoSearchState(null);
         return;
     }
-    if (state.index >= autoSearchKeywords.value.length) {
+    if (state.index >= getAutoSearchKeywords(state).length || hasAutoSearchReachedMaxPush(state)) {
         finishAutoSearch();
         return;
     }
@@ -1030,7 +1366,7 @@ const resumeAutoSearch = () => {
 }
 
 const handlerAutoSearch = () => {
-    if (autoSearchRunning.value) {
+    if (autoSearchRunning.value && autoSearchMode.value === 'search') {
         stopAutoSearch();
         return;
     }
@@ -1038,11 +1374,24 @@ const handlerAutoSearch = () => {
 }
 
 const handlerQuickPush = () => {
-    if (autoSearchRunning.value && autoSearchQuickPush.value) {
+    if (autoSearchRunning.value && autoSearchMode.value === 'quickPush') {
         stopAutoSearch();
         return;
     }
     startAutoSearch(true);
+}
+
+const handlerFuzzyPush = () => {
+    if (autoSearchRunning.value && autoSearchMode.value === 'fuzzyPush') {
+        stopAutoSearch();
+        return;
+    }
+    const keywords = buildFuzzyPushKeywords(fuzzyPushKeyword.value);
+    startKeywordQueue(keywords, 'fuzzyPush', {
+        sourceKeyword: fuzzyPushKeyword.value.trim(),
+        maxPushCount: fuzzyPushMaxCount.value,
+        reuseCurrentSearchParams: fuzzyPushReuseCurrentSearchParams.value,
+    });
 }
 
 const continueQuickPushAfterPushComplete = () => {
@@ -1054,7 +1403,11 @@ const continueQuickPushAfterPushComplete = () => {
         return;
     }
     clearAutoSearchTimer();
-    logRecorder.info("快速投递当前关键词已完成，立即搜索下一条");
+    if (hasAutoSearchReachedMaxPush(state)) {
+        finishAutoSearch();
+        return;
+    }
+    logRecorder.info(`${getAutoSearchModeText(state)}当前关键词已完成，立即搜索下一条`);
     runNextAutoSearch();
 }
 
@@ -1084,6 +1437,7 @@ const startPush = () => {
     pushStatus.value = PushStatus.PUSHING
     pushBtnType.value = 'warning'
     pushBtnText.value = '停止投递'
+    savePushResumeState();
 
     // 开始更新投递记录
     startRecordsUpdate();
@@ -1092,6 +1446,8 @@ const startPush = () => {
 
     //   投递结果处理
     pushResultPromise.then(() => {
+        markCurrentAutoSearchKeywordPushed();
+        clearPushResumeState();
         ElMessage({
             message: "批量投递完成",
             type: 'success',
@@ -1105,15 +1461,52 @@ const startPush = () => {
             stopRecordsUpdate();
             continueQuickPushAfterPushComplete();
         }, 200)
+    }).catch((error: any) => {
+        clearPushResumeState();
+        logger.error("批量投递异常", error);
+        pushStatus.value = PushStatus.PAUSE;
+        pushBtnType.value = 'primary'
+        pushBtnText.value = '开始投递'
+        stopRecordsUpdate();
+        ElMessage({
+            message: "批量投递异常：" + (error?.message || error),
+            type: 'error',
+            duration: 3000
+        })
     })
 }
 const pausePush = () => {
     platform.pausePush()
+    clearPushResumeState();
     pushStatus.value = PushStatus.PAUSE;
     pushBtnType.value = 'primary'
     pushBtnText.value = '开始投递'
     // 停止更新投递记录
     stopRecordsUpdate();
+}
+
+const resumePushAfterRefresh = () => {
+    const state = readPushResumeState();
+    if (!state?.running || !isSamePushResumeUrl(state.url)) {
+        return;
+    }
+    if (pushStatus.value === PushStatus.PUSHING) {
+        return;
+    }
+    mockPush.value = !!state.mockPush;
+    if (typeof state.selfDefPushCountLimit === 'number') {
+        const successCountAtStart = typeof state.successCountAtStart === 'number'
+            ? state.successCountAtStart
+            : pushResultCounter.successCount;
+        const successCountAfterStart = Math.max(0, pushResultCounter.successCount - successCountAtStart);
+        const remainingLimit = state.selfDefPushCountLimit === -1
+            ? -1
+            : Math.max(0, state.selfDefPushCountLimit - successCountAfterStart);
+        platform.selfDefPushCountLimit = remainingLimit;
+        selfDefPushCountLimit.value = remainingLimit;
+    }
+    logRecorder.info("检测到刷新前投递未结束，继续自动投递");
+    startPush();
 }
 
 const handlerAISeatClick = async () => {
@@ -1274,6 +1667,7 @@ if (!loginStore.login && !loginStore.loginFailStatus) {
 // 组件卸载时清理定时器
 onMounted(() => {
     resumeAutoSearch();
+    window.setTimeout(resumePushAfterRefresh, 1500);
 });
 
 onUnmounted(() => {
@@ -1373,6 +1767,65 @@ onUnmounted(() => {
 
 .quick-push-button {
     min-width: 108px;
+}
+
+.fuzzy-push-controls {
+    display: inline-flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    min-height: 48px;
+    padding: 6px 8px;
+    border: 1px solid #d9e3f0;
+    border-radius: 6px;
+    background: #f8fbff;
+}
+
+.fuzzy-field {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.fuzzy-field-label {
+    color: #606266;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.fuzzy-keyword-field {
+    width: 180px;
+}
+
+.fuzzy-count-field {
+    width: 132px;
+}
+
+.fuzzy-keyword-input {
+    width: 100%;
+}
+
+.fuzzy-count-input {
+    width: 100%;
+}
+
+.fuzzy-options {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    min-height: 32px;
+}
+
+:deep(.fuzzy-options .el-checkbox) {
+    margin-right: 0;
+}
+
+.fuzzy-push-button {
+    align-self: flex-end;
+    min-width: 128px;
 }
 
 .action-label {
