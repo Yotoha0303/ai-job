@@ -12,12 +12,12 @@ AI Job Hunting 是一个面向 Boss 直聘的求职自动化项目。项目通�
 
 - 批量投递：按当前 Boss 搜索结果批量沟通岗位，支持单次投递数量限制。
 - 个人简历补发 New!：按已经成功筛选出来的岗位，补发期间单个或多个岗位未成功沟通的简历信息。
-- 自动搜索 New!：按关键词库依次搜索岗位，每个关键词停留一段时间后切换下一条。
-- 快速投递 New!：按关键词搜索岗位，当前关键词投递完成后立即搜索下一条。
-- 模糊快投 New!：输入种子岗位关键词后自动扩展相似岗位关键词，可设置本轮最多投递数、沿用 Boss 筛选和 AI 匹配过滤。
+- 自动搜索 New!：按页面关键词库依次搜索岗位，每个关键词停留一段时间后切换下一条。
+- 快速投递 New!：按页面关键词库搜索岗位，当前关键词投递完成后立即搜索下一条。
+- 模糊快投 New!：选择已配置的模糊词库规则后，按规则扩展相似岗位关键词并批量投递。
 - 搜索参数复用 New!：自动搜索、快速投递和模糊快投会保留当前 Boss 搜索页的筛选条件，只替换关键词。
 - 投递后置发送队列 New!：投递成功后自定义招呼语和图片简历会进入待发送队列，聊天通道就绪后自动补发，不阻塞后续投递。
-- 关键词库 New!：前端维护固定关键词列表，适合按岗位方向批量搜索。
+- 关键词库 New!：前端页面维护自动搜索、快速投递关键词；模糊快投使用独立的模糊词库规则。
 - AI 坐席：结合简历信息辅助回复 HR 消息，支持预设问题、拒绝挽留、交换联系方式等场景。
 - 简历导入：从 Boss 侧导入简历信息，供 AI 回复和偏好配置使用。
 - 高意向通知：根据关键词、对话轮数等条件发送邮件通知。
@@ -180,18 +180,19 @@ make docker-clean    # 停止服务并删除 Docker volume
 
 ## 前端自动搜索配置
 
-自动搜索、快速投递和模糊快投依赖两个前端配置文件：
+自动搜索和快速投递使用页面中的 `搜索关键词` 维护关键词库；`autoSearchKeywords.ts` 只作为首次加载和恢复默认时的默认词库。搜索页地址、默认 URL 参数和筛选复用开关使用页面中的 `搜索参数` / `参数设置` 维护；`autoSearchConfig.ts` 只作为首次加载和恢复默认时的默认配置。模糊快投使用页面中的 `模糊词库` 维护种子词扩展规则。
+
+搜索参数的默认值来自前端配置文件：
 
 ```text
-ai-job-hunting-ui/src/config/autoSearchKeywords.ts
 ai-job-hunting-ui/src/config/autoSearchConfig.ts
 ```
 
 tips: 
 
-`autoSearchKeywords` 配置中的岗位关键词可以通过 AI 获取；
+页面 `搜索关键词` 中的岗位关键词可以通过 AI 生成后粘贴保存；
 
-`autoSearchConfig` 基于 boss 直聘官方 url 参数进行配置，如
+页面 `搜索参数` 中的 URL 参数基于 Boss 直聘官方 URL 参数进行配置，如
 
 ```text
 url：https://www.zhipin.com/web/geek/jobs?city=100010000
@@ -219,7 +220,7 @@ Copy-Item ai-job-hunting-ui/src/config/autoSearchConfig.ts.example ai-job-huntin
 
 ### `autoSearchKeywords.ts`
 
-该文件维护自动搜索关键词列表：
+该文件维护自动搜索和快速投递的默认关键词列表。实际使用时，优先读取浏览器本地保存的 `搜索关键词`；当本地没有保存过关键词或点击恢复默认时，才会使用这里的默认值：
 
 ```ts
 export const AUTO_SEARCH_KEYWORDS: string[] = [
@@ -231,14 +232,15 @@ export const AUTO_SEARCH_KEYWORDS: string[] = [
 
 说明：
 
-- 自动搜索和快速投递会按数组顺序从上到下执行；模糊快投会基于页面输入的种子岗位关键词临时生成关键词队列。
+- 自动搜索和快速投递会按数组顺序从上到下执行；模糊快投不读取这里的关键词，而是读取页面 `模糊词库` 中启用的投递规则。
 - 越重要、越精准的关键词应该排在越前面。
 - 每一项只放岗位关键词，不要放完整 URL。
 - 关键词会在搜索 URL 中写入 `query` 参数。
+- 页面中点击 `搜索关键词` 可以新增、删除或重排关键词；保存后会写入当前浏览器本地存储。
 
 ### `autoSearchConfig.ts`
 
-该文件维护搜索页地址和默认筛选参数：
+该文件维护搜索页地址和默认筛选参数的默认值。实际运行时，优先读取浏览器本地保存的 `搜索参数`；当本地没有保存过配置或点击恢复默认时，才会使用这里的默认值：
 
 ```ts
 export const AUTO_SEARCH_CONFIG: AutoSearchConfig = {
@@ -256,35 +258,39 @@ export const AUTO_SEARCH_CONFIG: AutoSearchConfig = {
 - `baseUrl`：Boss 岗位搜索页地址。
 - `defaultParams`：默认 URL 查询参数，会拼到搜索地址上；常见参数包括 `city`、`experience` 等。
 - `reuseCurrentSearchParams`：是否复用当前 Boss 搜索页已有筛选条件。
+- 页面中点击 `参数设置` 可以维护 `baseUrl` 和默认 URL 参数，也可以从当前 Boss 搜索页导入已经筛好的参数。
 
 运行规则：
 
 - `query` 不需要写在 `defaultParams`，程序会自动用当前关键词覆盖。
-- 当 `reuseCurrentSearchParams = true` 且当前页面已经是 Boss 搜索页时，会保留当前页面筛选条件，只替换 `query`。
+- 当 `沿用BOSS筛选` 开启，且当前页面已经是 Boss 搜索页时，会保留当前页面筛选条件，只替换 `query`。
 - `defaultParams` 只会补齐当前 URL 缺少的参数，不会覆盖你已经在页面上筛选好的参数。
-- 当 `reuseCurrentSearchParams = false` 时，每次搜索都从 `baseUrl + defaultParams + query` 生成新地址。
+- 当 `沿用BOSS筛选` 关闭时，每次搜索都从 `baseUrl + defaultParams + query` 生成新地址。
 
-使用建议：先在 Boss 页面手动筛选城市、薪资、经验、学历等条件，再点击自动搜索、快速投递或模糊快投；如果希望每次都使用固定筛选条件，把 `reuseCurrentSearchParams` 改为 `false`，并在 `defaultParams` 中维护固定参数。
+使用建议：先在 Boss 页面手动筛选城市、薪资、经验、学历等条件，再点击 `参数设置` 中的 `从当前页面导入`；如果希望每次都使用固定筛选条件，关闭页面上的 `沿用BOSS筛选`。
 
 ### 模糊快投
 
 模糊快投适合在已经配置好岗位偏好和过滤规则后，快速扩大候选岗位来源并尽快用完设定的投递数量。页面上的模糊快投区域包含以下控件：
 
-- `种子岗位关键词`：用于扩展相似岗位关键词的起点，例如 `Java后端`、`Go后端`、`前端`、`测试`。
-- `本轮最多投递`：本次模糊快投最多成功投递的岗位数量。
+- `投递规则`：选择 `模糊词库` 中已启用的规则；未配置或未启用规则时不能开始模糊快投。
+- `本轮最多投递`：本次模糊快投最多成功投递的岗位数量，并会按扩展关键词数量分摊单次投递上限。
 - `沿用BOSS筛选`：保留当前 Boss 搜索页的城市、薪资、经验、学历等筛选条件，只替换搜索关键词。
 - `AI匹配过滤`：复用偏好设置中的 AI 语义匹配过滤，不单独维护第二套 AI 过滤状态。
 - `开始模糊快投`：按扩展后的关键词队列开始搜索和投递；运行中按钮会变为 `停止模糊快投`。
+- `模糊词库`：在页面中维护 `种子关键词 -> 扩展搜索关键词` 规则，保存到当前浏览器本地存储，并作为模糊快投的唯一启动来源。
 
 运行规则：
 
-- 输入一个种子岗位关键词，例如 `Java后端`、`Go后端`、`前端`、`测试`。
-- 前端会基于内置映射和通用规则扩展相似关键词，例如 `Java后端` 会扩展为 `Java开发`、`后端开发`、`Spring Boot`、`微服务开发` 等。
+- 先在 `模糊词库` 中配置并启用规则，例如 `Go -> Go后端、Golang、服务端开发、云原生开发`。
+- 在 `投递规则` 下拉框中选择一条启用规则后才能开始；找不到启用规则时不会启动，也不会走临时兜底扩展。
+- 如果存在扩展词，完全相同的种子词会被排除，避免反复搜索种子词本身。
+- `本轮最多投递` 会按扩展关键词数量分摊单次投递上限，避免第一个关键词结果过多时占完整轮额度。
 - 每个扩展关键词都会复用现有搜索跳转逻辑，并继续执行现有 `matchJob -> push -> pushAfterHandler` 投递链路。
 - 是否复用当前 Boss 筛选条件由页面上的 `沿用BOSS筛选` 开关控制。
 - `AI匹配过滤` 开关复用偏好设置中的 AI 过滤能力，不单独维护第二套过滤状态。
 - 达到模糊快投设置的最大投递数量、Boss 当日上限、关键词队列执行完、连续过滤阈值或用户手动停止时会结束。
-- 运行状态和岗位处理状态会写入浏览器本地存储，自动刷新或手动刷新后会尽量继续当前任务并跳过已处理岗位。
+- 运行状态、岗位处理状态和模糊快投词库会写入浏览器本地存储，自动刷新或手动刷新后会尽量继续当前任务并跳过已处理岗位。
 
 ### 投递后置发送队列
 
@@ -327,6 +333,10 @@ AI 配置：
 ## 关键文件
 
 - [ai-job-hunting-ui/src/components/ui/AiJob.vue](./ai-job-hunting-ui/src/components/ui/AiJob.vue)：投递、自动搜索、快速投递、模糊快投主面板。
+- [ai-job-hunting-ui/src/services/autoSearchKeywords.ts](./ai-job-hunting-ui/src/services/autoSearchKeywords.ts)：自动搜索和快速投递关键词读取、保存、恢复默认和清洗逻辑。
+- [ai-job-hunting-ui/src/services/autoSearchRuntimeConfig.ts](./ai-job-hunting-ui/src/services/autoSearchRuntimeConfig.ts)：自动搜索搜索页地址、默认 URL 参数和筛选复用配置的读取、保存和恢复默认逻辑。
+- [ai-job-hunting-ui/src/config/fuzzyPushDefaultRules.ts](./ai-job-hunting-ui/src/config/fuzzyPushDefaultRules.ts)：模糊快投默认种子词和扩展词规则。
+- [ai-job-hunting-ui/src/services/fuzzyPushRules.ts](./ai-job-hunting-ui/src/services/fuzzyPushRules.ts)：模糊快投词库读取、保存、恢复默认和扩展逻辑。
 - [ai-job-hunting-ui/src/platform/platform.ts](./ai-job-hunting-ui/src/platform/platform.ts)：投递流程抽象、岗位处理进度和投递后置发送队列。
 - [ai-job-hunting-ui/src/platform/bossPlatform.ts](./ai-job-hunting-ui/src/platform/bossPlatform.ts)：Boss 平台适配逻辑。
 - [ai-job-hunting-ui/src/webSocket/hookMain.ts](./ai-job-hunting-ui/src/webSocket/hookMain.ts)：WebSocket Hook 和消息拦截。
