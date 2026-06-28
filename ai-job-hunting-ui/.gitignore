@@ -25,6 +25,3 @@ dist-ssr
 
 auto-imports.d.ts
 components.d.ts
-src/config/autoSearchConfig.ts
-src/config/autoSearchKeywords.ts
-src/config/fuzzyPushDefaultRules.ts

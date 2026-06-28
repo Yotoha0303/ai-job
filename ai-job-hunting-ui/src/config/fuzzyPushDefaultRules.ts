@@ -8,9 +8,9 @@ export interface FuzzyPushKeywordRule {
 
 export const DEFAULT_FUZZY_PUSH_KEYWORD_RULES: FuzzyPushKeywordRule[] = [
     {
-        id: 'default-go',
-        seedKeyword: 'Go',
-        expandedKeywords: ['Go后端', 'Golang', 'Go开发', 'Golang后端', '服务端开发', '云原生开发', '微服务开发'],
+        id: 'default-岗位',
+        seedKeyword: '岗位种子',
+        expandedKeywords: ['种子1', '种子2', '种子3',],
         enabled: true,
         updatedAt: 0,
     },
