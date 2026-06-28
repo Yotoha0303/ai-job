@@ -53,6 +53,7 @@ Spring Boot 3 + Spring AI + MyBatis Plus
 ├── file/                    # README 截图素材
 ├── common/                  # 关键词库等辅助材料
 ├── Makefile                 # 常用开发和部署命令
+├── Docker-Windows快速使用.md # Windows + Docker 补充说明
 ├── README-old.md            # 原 README 归档
 └── 部署指南v1.md             # 原部署文档
 ```
@@ -67,6 +68,80 @@ Spring Boot 3 + Spring AI + MyBatis Plus
 - Tampermonkey 或兼容的用户脚本管理器
 
 Windows PowerShell 如果拦截 `pnpm` 脚本，可以使用 `pnpm.cmd`。
+
+## Windows + Docker 快速启动
+
+本项目仅仅用于个人使用，默认项目启动者为普通使用者，非开发者。已修改后端配置，跳过付费选项和前端提醒
+
+### 1. 环境配置
+
+- JDK 17
+- Maven 3.8+
+- Node.js 18+
+- Docker windows
+
+### 2. 最小修改
+
+tips: `kimi key`需要通过`kimi`官网获取，链接：https://platform.kimi.com
+
+在该`ai-job-hunting-server\src\main\resources\`路径下，修改两个`properties`文件中的`kimi api`，即`spring.ai.kimi.api-key=xxx`
+
+### 3. 打包并启动 MySQL、后端
+
+在项目根目录执行：
+
+```powershell
+mvn.cmd -f .\ai-job-hunting-server\pom.xml -DskipTests package
+docker compose -f .\ai-job-hunting-server\src\main\resources\docker\docker-compose.yml up -d --build
+```
+
+### 4. 启动并安装前端用户脚本
+
+新开一个 PowerShell 窗口，在项目根目录执行：
+
+```powershell
+Set-Location .\ai-job-hunting-ui
+npm install --legacy-peer-deps
+npm run dev
+```
+
+浏览器已安装 Tampermonkey 时，打开 `http://127.0.0.1:5173/` 安装开发版用户脚本。随后进入 Boss 直聘岗位列表页，在功能面板中将服务器地址设置为 `http://localhost:9100`。
+
+### 5. 停止或重建
+
+```powershell
+# 停止容器，保留 MySQL 数据
+docker compose -f .\ai-job-hunting-server\src\main\resources\docker\docker-compose.yml down
+
+# 修改后端配置或代码后，重新打包并重建后端容器
+mvn.cmd -f .\ai-job-hunting-server\pom.xml -DskipTests package
+docker compose -f .\ai-job-hunting-server\src\main\resources\docker\docker-compose.yml up -d --build ai-job
+```
+
+需要删除 MySQL 数据并完全初始化时，使用 `down -v`。该操作会永久删除当前 Compose 项目的数据库数据，请先确认无需保留。
+
+### 常见问题：
+
+1、后端报错：图片无法上传的问题
+
+解决方法：充值 kimi
+
+2、前端报错：AI助力链接失败
+
+解决方法：配置 kimi api
+
+3、岗位在哪里配置？
+
+解决方法：在项目正常启动后，在页面中配置
+
+4、页面现实没有链接上 AI
+
+解决方法：在项目正常启动后，在页面中`AI配置`中配置个人AI
+
+5、岗位如何投递，会投递什么信息给 HR
+
+答：在项目正常启动，且已经配置个人AI、岗位词库后，项目会按照词库进行筛选投递，投递结果可以在页面的"消息"中查看
+
 
 ## 快速开始
 

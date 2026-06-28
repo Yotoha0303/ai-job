@@ -26,6 +26,7 @@ server-package:
 	$(MAVEN) -f $(SERVER_DIR)/pom.xml -DskipTests package
 
 ui-dev:
+	cd $(UI_DIR) && npm i --legacy-peer-deps
 	cd $(UI_DIR) && $(PNPM) run dev
 
 ui-build:
