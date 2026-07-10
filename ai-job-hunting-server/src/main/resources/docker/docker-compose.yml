@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root0303}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-YOUR_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_job}
     ports:
       - "${MYSQL_PORT:-3306}:3306"
